@@ -29,6 +29,9 @@ pub enum KhukriError {
     #[error("Download cancelled")]
     Cancelled,
 
+    #[error("Download aborted due to sibling segment failure")]
+    Aborted,
+
     #[error("Missing Content-Length header")]
     NoContentLength,
 

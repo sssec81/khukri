@@ -1,12 +1,14 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -21,9 +23,155 @@ use crate::error::{KhukriError, Result};
 
 type Bucket = Arc<Mutex<TokenBucket>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadStatus {
+    Queued,
+    Active,
+    Paused,
+    Complete,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub id: String,
+    pub status: DownloadStatus,
+    pub bytes_done: u64,
+    pub total_bytes: Option<u64>,
+    pub speed_bps: u64,
+    pub eta_seconds: Option<u64>,
+    pub segments_done: u32,
+    pub segments_total: Option<u32>,
+}
+
+pub struct DownloadHandle {
+    id: String,
+    cancel: CancellationToken,
+    progress: watch::Receiver<DownloadProgress>,
+    join: JoinHandle<Result<()>>,
+}
+
+impl DownloadHandle {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<DownloadProgress> {
+        self.progress.clone()
+    }
+
+    pub async fn wait(self) -> Result<()> {
+        self.join.await?
+    }
+}
+
+#[derive(Clone)]
+struct ProgressState {
+    tx: watch::Sender<DownloadProgress>,
+    started_at: Instant,
+    bytes_done: Arc<AtomicU64>,
+    segments_done: Arc<AtomicU32>,
+    segments_total: Arc<AtomicU32>,
+}
+
+impl ProgressState {
+    fn new(tx: watch::Sender<DownloadProgress>) -> Self {
+        Self {
+            tx,
+            started_at: Instant::now(),
+            bytes_done: Arc::new(AtomicU64::new(0)),
+            segments_done: Arc::new(AtomicU32::new(0)),
+            segments_total: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn set_status(&self, status: DownloadStatus) {
+        self.emit(status);
+    }
+
+    fn set_totals(&self, total_bytes: Option<u64>, segments_total: Option<u32>) {
+        if let Some(total) = segments_total {
+            self.segments_total.store(total, Ordering::Relaxed);
+        }
+        self.edit_status(|p| {
+            p.total_bytes = total_bytes;
+            p.segments_total = segments_total.or(p.segments_total);
+        });
+    }
+
+    fn add_bytes(&self, bytes: u64) {
+        self.bytes_done.fetch_add(bytes, Ordering::Relaxed);
+        self.emit(DownloadStatus::Active);
+    }
+
+    fn mark_segment_done(&self) {
+        self.segments_done.fetch_add(1, Ordering::Relaxed);
+        self.emit(DownloadStatus::Active);
+    }
+
+    fn emit(&self, status: DownloadStatus) {
+        self.edit_status(|p| {
+            let bytes_done = self.bytes_done.load(Ordering::Relaxed);
+            let elapsed_secs = self.started_at.elapsed().as_secs_f64().max(0.001);
+            let speed_bps = (bytes_done as f64 / elapsed_secs) as u64;
+            let eta_seconds = p.total_bytes.and_then(|total| {
+                if speed_bps == 0 || bytes_done >= total {
+                    None
+                } else {
+                    Some((total - bytes_done) / speed_bps)
+                }
+            });
+            p.status = status;
+            p.bytes_done = bytes_done;
+            p.speed_bps = speed_bps;
+            p.eta_seconds = eta_seconds;
+            p.segments_done = self.segments_done.load(Ordering::Relaxed);
+            let seg_total = self.segments_total.load(Ordering::Relaxed);
+            p.segments_total = if seg_total == 0 { None } else { Some(seg_total) };
+        });
+    }
+
+    fn edit_status<F>(&self, mut f: F)
+    where
+        F: FnMut(&mut DownloadProgress),
+    {
+        let mut next = self.tx.borrow().clone();
+        f(&mut next);
+        let _ = self.tx.send(next);
+    }
+}
+
+pub fn spawn_download(config: DownloadConfig, pool: SqlitePool) -> DownloadHandle {
+    let download_id = download_id_for(&config);
+    let (tx, rx) = watch::channel(DownloadProgress {
+        id: download_id.clone(),
+        status: DownloadStatus::Queued,
+        bytes_done: 0,
+        total_bytes: None,
+        speed_bps: 0,
+        eta_seconds: None,
+        segments_done: 0,
+        segments_total: None,
+    });
+
+    let cancel = CancellationToken::new();
+    let join = tokio::spawn(start_download_internal(config, pool, cancel.clone(), Some(tx)));
+
+    DownloadHandle {
+        id: download_id,
+        cancel,
+        progress: rx,
+        join,
+    }
+}
+
 /// Entry point for a single download.
 pub async fn start_download(config: DownloadConfig, pool: SqlitePool) -> Result<()> {
-    start_download_with_cancel(config, pool, CancellationToken::new()).await
+    start_download_internal(config, pool, CancellationToken::new(), None).await
 }
 
 /// Entry point that supports cooperative cancellation.
@@ -32,12 +180,34 @@ pub async fn start_download_with_cancel(
     pool: SqlitePool,
     cancel: CancellationToken,
 ) -> Result<()> {
+    start_download_internal(config, pool, cancel, None).await
+}
+
+async fn start_download_internal(
+    config: DownloadConfig,
+    pool: SqlitePool,
+    cancel: CancellationToken,
+    progress_tx: Option<watch::Sender<DownloadProgress>>,
+) -> Result<()> {
     config.validate()?;
-    let client = Arc::new(Client::builder().build()?);
+    let client = Arc::new(
+        Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_max_idle_per_host(16)
+            .tcp_keepalive(Duration::from_secs(30))
+            .user_agent("khukri-engine/0.1")
+            .http2_adaptive_window(true)
+            .build()?,
+    );
     let download_id = download_id_for(&config);
+    let progress = progress_tx.map(ProgressState::new);
 
     if cancel.is_cancelled() {
         db::set_download_status(&pool, &download_id, "paused").await.ok();
+        if let Some(p) = &progress {
+            p.set_status(DownloadStatus::Paused);
+        }
         return Err(KhukriError::Cancelled);
     }
 
@@ -101,6 +271,10 @@ pub async fn start_download_with_cancel(
     .await?;
 
     db::set_download_status(&pool, &download_id, "active").await?;
+    if let Some(p) = &progress {
+        p.set_totals(total_bytes, None);
+        p.set_status(DownloadStatus::Active);
+    }
 
     // ── 3. Prepare output directory ───────────────────────────────────────────
     if let Some(parent) = config.file_path.parent() {
@@ -116,33 +290,70 @@ pub async fn start_download_with_cancel(
 
     let outcome = match total_bytes {
         Some(size) if accepts_ranges => {
-            segmented_download(&config, &pool, &client, &download_id, size, bucket, &cancel).await
+            segmented_download(
+                &config,
+                &pool,
+                &client,
+                &download_id,
+                size,
+                bucket,
+                &cancel,
+                progress.clone(),
+            )
+            .await
         }
         Some(size) => {
             warn!("Server does not support range requests — single-thread fallback");
-            streaming_download(&config, &client, &download_id, &pool, Some(size), bucket, &cancel)
-                .await
+            streaming_download(
+                &config,
+                &client,
+                &download_id,
+                &pool,
+                Some(size),
+                bucket,
+                &cancel,
+                progress.clone(),
+            )
+            .await
         }
         None => {
             warn!("No Content-Length — streaming download (no segmenting or resume)");
-            streaming_download(&config, &client, &download_id, &pool, None, bucket, &cancel)
-                .await
+            streaming_download(
+                &config,
+                &client,
+                &download_id,
+                &pool,
+                None,
+                bucket,
+                &cancel,
+                progress.clone(),
+            )
+            .await
         }
     };
 
     match outcome {
         Ok(()) => {
             db::set_download_status(&pool, &download_id, "complete").await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Complete);
+            }
             info!(id = %download_id, path = ?config.file_path, "Download complete");
             Ok(())
         }
         Err(KhukriError::Cancelled) => {
             db::set_download_status(&pool, &download_id, "paused").await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Paused);
+            }
             warn!(id = %download_id, "Download cancelled");
             Err(KhukriError::Cancelled)
         }
         Err(e) => {
             db::set_download_status(&pool, &download_id, "failed").await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Failed);
+            }
             Err(e)
         }
     }
@@ -158,6 +369,7 @@ async fn segmented_download(
     total_bytes: u64,
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
+    progress: Option<ProgressState>,
 ) -> Result<()> {
     let thread_count = resolved_thread_count(total_bytes, config.override_threads);
 
@@ -166,6 +378,10 @@ async fn segmented_download(
     let segments = build_segments(total_bytes, thread_count);
     let seg_pairs: Vec<(u64, u64)> =
         segments.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+
+    if let Some(p) = &progress {
+        p.set_totals(Some(total_bytes), Some(segments.len() as u32));
+    }
 
     let existing = db::get_all_segments(pool, download_id).await?;
     let resume_mode = can_reuse_segments(&existing, &seg_pairs);
@@ -186,6 +402,7 @@ async fn segmented_download(
 
     let incomplete = db::get_incomplete_segments(pool, download_id).await?;
     info!("{}/{} segment(s) remaining", incomplete.len(), segments.len());
+    let fail_fast = CancellationToken::new();
 
     let mut handles = Vec::with_capacity(incomplete.len());
 
@@ -201,6 +418,8 @@ async fn segmented_download(
         let retry_cfg = config.retry.clone();
         let bucket = bucket.clone();
         let cancel = cancel.clone();
+        let fail_fast = fail_fast.clone();
+        let progress = progress.clone();
 
         handles.push(tokio::spawn(async move {
             let seg_id = seg_row.id;
@@ -210,6 +429,9 @@ async fn segmented_download(
             if cancel.is_cancelled() {
                 return Err(KhukriError::Cancelled);
             }
+            if fail_fast.is_cancelled() {
+                return Err(KhukriError::Aborted);
+            }
 
             let result = with_retry(&retry_cfg, || {
                 let client = client.clone();
@@ -217,11 +439,27 @@ async fn segmented_download(
                 let file_path = file_path.clone();
                 let bucket = bucket.clone();
                 let cancel = cancel.clone();
+                let fail_fast = fail_fast.clone();
+                let progress = progress.clone();
                 async move {
                     if cancel.is_cancelled() {
                         return Err(KhukriError::Cancelled);
                     }
-                    fetch_segment(&client, &url, &file_path, start, end, bucket, &cancel).await
+                    if fail_fast.is_cancelled() {
+                        return Err(KhukriError::Aborted);
+                    }
+                    fetch_segment(
+                        &client,
+                        &url,
+                        &file_path,
+                        start,
+                        end,
+                        bucket,
+                        &cancel,
+                        &fail_fast,
+                        progress.clone(),
+                    )
+                    .await
                 }
             })
             .await;
@@ -229,9 +467,15 @@ async fn segmented_download(
             match result {
                 Ok(()) => {
                     db::mark_segment_complete(&pool, seg_id).await?;
+                    if let Some(p) = &progress {
+                        p.mark_segment_done();
+                    }
                     Ok::<(), KhukriError>(())
                 }
                 Err(e) => {
+                    if !matches!(e, KhukriError::Cancelled | KhukriError::Aborted) {
+                        fail_fast.cancel();
+                    }
                     error!("Segment [{start}-{end}] failed: {e}");
                     Err(e)
                 }
@@ -248,13 +492,18 @@ async fn segmented_download(
                 if matches!(e, KhukriError::Cancelled) {
                     return Err(KhukriError::Cancelled);
                 }
+                if matches!(e, KhukriError::Aborted) {
+                    continue;
+                }
                 if first_error.is_none() {
+                    fail_fast.cancel();
                     first_error = Some(e);
                 }
             }
             Err(e) => {
                 error!("Segment task panicked: {e}");
                 if first_error.is_none() {
+                    fail_fast.cancel();
                     first_error = Some(KhukriError::Join(e));
                 }
             }
@@ -282,6 +531,7 @@ async fn streaming_download(
     known_size: Option<u64>,
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
+    progress: Option<ProgressState>,
 ) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(KhukriError::Cancelled);
@@ -334,6 +584,9 @@ async fn streaming_download(
         }
         file.write_all(&bytes).await?;
         written += bytes.len() as u64;
+        if let Some(p) = &progress {
+            p.add_bytes(bytes.len() as u64);
+        }
     }
 
     file.flush().await?;
@@ -363,9 +616,14 @@ async fn fetch_segment(
     end: u64,
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
+    fail_fast: &CancellationToken,
+    progress: Option<ProgressState>,
 ) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(KhukriError::Cancelled);
+    }
+    if fail_fast.is_cancelled() {
+        return Err(KhukriError::Aborted);
     }
 
     let response = client
@@ -403,12 +661,18 @@ async fn fetch_segment(
         if cancel.is_cancelled() {
             return Err(KhukriError::Cancelled);
         }
+        if fail_fast.is_cancelled() {
+            return Err(KhukriError::Aborted);
+        }
 
         let bytes = chunk?;
         if let Some(ref b) = bucket {
             b.lock().await.consume(bytes.len() as u64).await;
         }
         file.write_all(&bytes).await?;
+        if let Some(p) = &progress {
+            p.add_bytes(bytes.len() as u64);
+        }
     }
 
     file.flush().await?;

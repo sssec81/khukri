@@ -18,10 +18,11 @@ use axum::{
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::net::TcpListener;
+use tokio::time::{timeout, Duration};
 
 use khukri_engine::{
     config::{DownloadConfig, Priority, RetryConfig, ThrottleConfig},
-    db, start_download,
+    db, spawn_download, start_download, DownloadStatus,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -358,4 +359,50 @@ async fn test_resume_download_fetches_only_incomplete_segments() {
 
     let got = std::fs::read(&out).expect("output file missing");
     assert_eq!(sha256(&got), sha256(&data));
+}
+
+/// 6. Progress API — spawned downloads expose real-time state and terminal status.
+#[tokio::test]
+async fn test_spawn_download_reports_progress() {
+    let data = test_data();
+    let addr = spawn_server(
+        Router::new()
+            .route("/file", get(range_handler))
+            .with_state(data.clone()),
+    )
+    .await;
+
+    let out = tmp("khukri_it_progress.bin");
+    let _ = std::fs::remove_file(&out);
+
+    let handle = spawn_download(
+        cfg(format!("http://{addr}/file"), &out),
+        make_pool("progress").await,
+    );
+
+    let mut rx = handle.subscribe();
+    let mut saw_active = false;
+
+    timeout(Duration::from_secs(20), async {
+        loop {
+            let snapshot = rx.borrow().clone();
+            if snapshot.status == DownloadStatus::Active {
+                saw_active = true;
+            }
+            if snapshot.status == DownloadStatus::Complete {
+                break snapshot;
+            }
+            rx.changed().await.expect("progress channel closed unexpectedly");
+        }
+    })
+    .await
+    .expect("timed out waiting for completion");
+
+    handle.wait().await.expect("spawned download failed");
+    let final_state = rx.borrow().clone();
+
+    assert!(saw_active, "expected at least one active progress state");
+    assert_eq!(final_state.status, DownloadStatus::Complete);
+    assert_eq!(final_state.bytes_done as usize, data.len());
+    assert_eq!(final_state.total_bytes, Some(data.len() as u64));
 }

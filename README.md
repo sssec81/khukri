@@ -74,7 +74,7 @@ cargo build -p khukri-engine
 
 ### Test
 
-Runs 16 unit tests + 5 integration tests (local HTTP server, no network required):
+Runs 17 unit tests + 6 integration tests (local HTTP server, no network required):
 
 ```bash
 cargo test -p khukri-engine
@@ -103,6 +103,7 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 |---|---|
 | `engine/segment.rs` | Thread count formula: `clamp(floor(file_size_MB / 50), 4, 64)` |
 | `engine/download.rs` | Segmented parallel download + streaming fallback (no Content-Length), deterministic download IDs, cancellation-aware entrypoint |
+| `engine/download.rs` (API) | Public `spawn_download` + `DownloadHandle` progress watcher (`watch`) for bytes/speed/ETA/status |
 | `engine/retry.rs` | Exponential back-off with ±10% jitter; permanent errors (403, 404) never retried |
 | `engine/prealloc.rs` | `fallocate` (Linux) / `SetEndOfFile` (Windows) / `ftruncate` (macOS) before writes |
 | `engine/throttle.rs` | Token-bucket rate limiter; shared across segment tasks for accurate per-download cap |
@@ -114,8 +115,8 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 
 | Type | Count | What |
 |---|---|---|
-| Unit | 16 | Thread count formula (including tiny/zero-byte edge cases), retry logic (2 failures → success, permanent error, exhaustion), token bucket (no-sleep, deficit sleep, unlimited), priority ordering, config validation |
-| Integration | 5 | SHA-256 verified segmented download, streaming fallback, retry on transient 5xx, permanent 403 not retried, resume only re-fetches incomplete segments |
+| Unit | 17 | Thread count formula (including tiny/zero-byte edge cases), retry logic (2 failures → success, permanent error, abort, exhaustion), token bucket (no-sleep, deficit sleep, unlimited), priority ordering, config validation |
+| Integration | 6 | SHA-256 verified segmented download, streaming fallback, retry on transient 5xx, permanent 403 not retried, resume only re-fetches incomplete segments, spawned progress reporting |
 
 ---
 
@@ -129,6 +130,7 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 - **Pre-allocation:** reserves full disk space before any segment writes — prevents fragmentation and catches out-of-space early
 - **Queue slot safety:** RAII drop guard ensures `active_count` is always decremented even if a download task panics
 - **Cancellation:** cooperative cancellation support via `start_download_with_cancel(..., CancellationToken)` updates state to `paused`
+- **Progress API:** `spawn_download` returns `DownloadHandle` with a `watch` subscription for status, bytes done, speed, ETA, and segment counts
 - **Config safety:** invalid runtime config (empty URL/path, invalid thread override) is rejected early with explicit errors
 
 ---

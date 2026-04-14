@@ -45,6 +45,10 @@ where
                 // Never retry user-requested cancellation.
                 return Err(KhukriError::Cancelled);
             }
+            Err(KhukriError::Aborted) => {
+                // Never retry internal fail-fast aborts.
+                return Err(KhukriError::Aborted);
+            }
             Err(e) => {
                 if attempt >= config.max_retries {
                     return Err(KhukriError::MaxRetriesExceeded { attempts: attempt });
@@ -147,5 +151,23 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(KhukriError::MaxRetriesExceeded { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_aborted_not_retried() {
+        let counter = Arc::new(AtomicU8::new(0));
+        let c = counter.clone();
+
+        let result: Result<u32> = with_retry(&fast_config(), || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(KhukriError::Aborted)
+            }
+        })
+        .await;
+
+        assert!(matches!(result, Err(KhukriError::Aborted)));
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
