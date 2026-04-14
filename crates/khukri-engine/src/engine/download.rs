@@ -25,10 +25,15 @@ pub async fn start_download(config: DownloadConfig, pool: SqlitePool) -> Result<
     let client = Arc::new(Client::builder().build()?);
     let download_id = Uuid::new_v4().to_string();
 
-    // ── 1. HEAD: probe Content-Length + Accept-Ranges ────────────────────────
-    let head = client.head(&config.url).send().await?;
-    let status = head.status().as_u16();
+    // ── 1. HEAD: probe Content-Length + Accept-Ranges (with retry) ──────────
+    let head = with_retry(&config.retry, || {
+        let client = client.clone();
+        let url = config.url.clone();
+        async move { client.head(&url).send().await.map_err(KhukriError::Http) }
+    })
+    .await?;
 
+    let status = head.status().as_u16();
     if is_permanent_failure(status) {
         return Err(KhukriError::PermanentError { status, url: config.url.clone() });
     }
@@ -195,9 +200,14 @@ async fn streaming_download(
     known_size: Option<u64>,
     bucket: Option<Bucket>,
 ) -> Result<()> {
-    let response = client.get(&config.url).send().await?;
-    let status = response.status().as_u16();
+    let response = with_retry(&config.retry, || {
+        let client = client.clone();
+        let url = config.url.clone();
+        async move { client.get(&url).send().await.map_err(KhukriError::Http) }
+    })
+    .await?;
 
+    let status = response.status().as_u16();
     if is_permanent_failure(status) {
         return Err(KhukriError::PermanentError { status, url: config.url.clone() });
     }
@@ -258,7 +268,10 @@ async fn fetch_segment(
     if is_permanent_failure(status) {
         return Err(KhukriError::PermanentError { status, url: url.to_string() });
     }
-    if !response.status().is_success() {
+    // Range requests must return 206 Partial Content.
+    // A 200 means the server ignored our Range header and sent the full file —
+    // writing it at `start` offset would corrupt the output.
+    if status != 206 {
         return Err(KhukriError::Http(response.error_for_status().unwrap_err()));
     }
 
