@@ -186,6 +186,8 @@ Create the MV3 extension scaffold with a service worker that intercepts browser 
 **Acceptance Criteria:**
 - [ ] `manifest.json` targets MV3 with `downloads` and `nativeMessaging` permissions.
 - [ ] Service worker intercepts `onCreated` and cancels browser download to hand-off.
+- [ ] Active bridge sessions use `chrome.runtime.connectNative()` (long-lived port), not one-off `sendNativeMessage()` for in-progress transfer coordination.
+- [ ] Manual QA confirms worker does not drop active native session during long-running transfer.
 
 ---
 
@@ -219,6 +221,7 @@ Implement the Rust Native Messaging bridge over stdin/stdout with protocol-safe 
 - [ ] Implement 4-byte native-endian length header logic for Chrome protocol.
 - [ ] `khukri-engine` updated to accept `CustomHeaders` (Cookies/User-Agent) from bridge.
 - [ ] STDOUT logic ensures ZERO extra `println!` calls (to prevent protocol corruption).
+- [ ] Bridge logging is explicitly routed to stderr or file output so Native Messaging stdout framing stays clean.
 
 ---
 
