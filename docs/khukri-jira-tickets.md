@@ -635,4 +635,34 @@ Verify that Khukri makes zero outbound network requests except: user-initiated d
 
 ---
 
+## Technical Debt (Deferred by Design)
+
+These are intentional deferrals, not forgotten work. They are tracked so future regressions are easier to explain and fix.
+
+### TD-001 · SQLite WAL mode not enabled yet
+
+**Current choice:** default SQLite mode in Sprint 1 for minimal moving parts.  
+**Risk:** writer contention once bridge + GUI start writing around the same time.  
+**Planned fix window:** Sprint 2.5 (before full Sprint 3 UI rollout).
+
+### TD-002 · No persistent bridge-heartbeat contract yet
+
+**Current choice:** cancellation is supported, but there is no mandatory parent-process heartbeat protocol.  
+**Risk:** bridge/parent crashes could leave long-running downloads active longer than expected.  
+**Planned fix window:** Sprint 2 (KHU-203 follow-up).
+
+### TD-003 · Header/session passthrough is partial
+
+**Current choice:** core engine path is stable first; full browser session parity is not complete.  
+**Risk:** 403 failures on sites requiring strict Cookies/User-Agent/Referer continuity.  
+**Planned fix window:** Sprint 2 (KHU-203).
+
+### TD-004 · Stalled-stream watchdog timeout is fixed-value
+
+**Current choice:** constant watchdog timeout for safety and simplicity.  
+**Risk:** very slow or unstable networks may need profile-specific tuning.  
+**Planned fix window:** Sprint 2.5 (configurable networking profile).
+
+---
+
 *End of Khukri Jira Tickets — v1.1*

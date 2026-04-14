@@ -1,7 +1,6 @@
 # 🗡️ Khukri
 
-> High-performance, open-source download manager. Built with Rust + Tauri 2.0.  
-> Zero telemetry. Zero bloat. Zero compromises.
+> Khukri exists because I wanted a downloader that does not phone home, does not eat RAM, and does not turn into a lag machine under parallel downloads.
 
 ---
 
@@ -30,6 +29,19 @@
 
 ---
 
+## Why Rust?
+
+Because this project is mostly systems work disguised as a downloader.
+
+- Parallel segment writes are easy to get wrong: one bad offset or shared mutable state bug can silently corrupt files.
+- NVMe can hide bad design for a while, then punish it at scale when concurrent writes and allocation churn kick in.
+- If you do not pre-allocate up front, the kernel/filesystem allocator keeps searching for free extents while segments are writing, which increases I/O jitter and can fragment write patterns under load.
+- Rust gives strong guarantees around ownership and concurrency, so the engine can run many async tasks without data races while still keeping throughput high.
+
+Khukri leans into this: deterministic segment ranges, pre-allocation before writes, explicit retry/cancel paths, and SQLite-backed state so crashes do not destroy progress.
+
+---
+
 ## Architecture
 
 ```
@@ -53,6 +65,9 @@ khukri/
 ├── i18n/
 │   └── en.json            # All UI strings
 └── docs/
+    ├── adr/
+    │   └── 001-native-messaging-vs-websockets.md
+    │   └── 002-stream-watchdog-timeout-policy.md
     ├── khukri-prd.md      # Product requirements (LOCKED v1.1)
     ├── khukri-jira-tickets.md
     └── integration-hardening.md  # Sprint 2/3 integration risks and mitigations
