@@ -265,10 +265,14 @@ async fn streaming_download(
 
     file.flush().await?;
 
-    db::insert_segments(pool, download_id, &[(0, written.saturating_sub(1))]).await?;
-    let segs = db::get_incomplete_segments(pool, download_id).await?;
-    if let Some(seg) = segs.first() {
-        db::mark_segment_complete(pool, seg.id).await?;
+    // Only record a segment if bytes were actually written.
+    // written = 0 (empty file) must not insert a bogus (0, 0) row.
+    if written > 0 {
+        db::insert_segments(pool, download_id, &[(0, written - 1)]).await?;
+        let segs = db::get_incomplete_segments(pool, download_id).await?;
+        if let Some(seg) = segs.first() {
+            db::mark_segment_complete(pool, seg.id).await?;
+        }
     }
 
     info!(written_bytes = written, "Streaming download complete");
@@ -297,14 +301,17 @@ async fn fetch_segment(
         return Err(KhukriError::PermanentError { status, url: url.to_string() });
     }
 
-    // Must be 206 Partial Content. A 200 means the server ignored our Range
-    // header and returned the full file — writing at `start` would corrupt output.
+    // Must be 206 Partial Content.
+    // - 200: server ignored our Range header and returned the full file; writing
+    //        at `start` would corrupt output — classify as NoRangeSupport.
+    // - 3xx: reqwest follows redirects automatically (up to 10); seeing a 3xx here
+    //        means the redirect limit was exhausted — treat as NoRangeSupport since
+    //        we cannot follow further and writing at offset would be wrong.
+    // - 4xx/5xx (not already caught): surface as Http error so with_retry can decide.
     if status != 206 {
         return Err(if status >= 400 {
-            // 4xx/5xx not already caught above — retryable or specific error.
             KhukriError::Http(response.error_for_status().unwrap_err())
         } else {
-            // 1xx / 2xx (not 206) / 3xx — server doesn't honour Range.
             KhukriError::NoRangeSupport
         });
     }

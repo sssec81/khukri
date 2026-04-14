@@ -41,6 +41,10 @@ pub async fn insert_download(
     priority: &str,
     now_secs: i64,
 ) -> Result<()> {
+    // SQLite stores integers as i64. No real filesystem supports files > i64::MAX (9.2 EB),
+    // so this cast is safe in practice. We preserve the bit pattern — SQLite reads it back
+    // correctly via the same cast on the way out.
+    #[allow(clippy::cast_possible_wrap)]
     let total = total_bytes.map(|b| b as i64);
     sqlx::query(
         "INSERT INTO downloads (id, url, file_path, total_bytes, status, priority, created_at)
@@ -89,7 +93,7 @@ pub async fn insert_segments(
              VALUES (?, ?, ?, 0)",
         )
         .bind(download_id)
-        .bind(*start as i64)
+        .bind(*start as i64) // i64 cast safe: no filesystem supports > 9.2 EB offsets
         .bind(*end as i64)
         .execute(&mut *tx)
         .await?;
