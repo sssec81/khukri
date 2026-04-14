@@ -22,6 +22,7 @@ use crate::engine::throttle::TokenBucket;
 use crate::error::{KhukriError, Result};
 
 type Bucket = Arc<Mutex<TokenBucket>>;
+const STREAM_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadStatus {
@@ -397,7 +398,13 @@ async fn segmented_download(
         .truncate(!resume_mode)
         .open(&config.file_path)
         .await?;
-    preallocate(&file, total_bytes).await?;
+    if let Err(e) = preallocate(&file, total_bytes).await {
+        drop(file);
+        if !resume_mode {
+            let _ = tokio::fs::remove_file(&config.file_path).await;
+        }
+        return Err(e);
+    }
     drop(file);
 
     let incomplete = db::get_incomplete_segments(pool, download_id).await?;
@@ -567,13 +574,30 @@ async fn streaming_download(
         .await?;
 
     if let Some(size) = known_size {
-        preallocate(&file, size).await?;
+        if let Err(e) = preallocate(&file, size).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(&config.file_path).await;
+            return Err(e);
+        }
     }
 
     let mut stream = response.bytes_stream();
     let mut written: u64 = 0;
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::time::timeout(STREAM_WATCHDOG_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| {
+                KhukriError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "stream stalled",
+                ))
+            })?;
+
+        let Some(chunk) = next else {
+            break;
+        };
+
         if cancel.is_cancelled() {
             return Err(KhukriError::Cancelled);
         }
@@ -657,7 +681,20 @@ async fn fetch_segment(
     file.seek(std::io::SeekFrom::Start(start)).await?;
 
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next = tokio::time::timeout(STREAM_WATCHDOG_TIMEOUT, stream.next())
+            .await
+            .map_err(|_| {
+                KhukriError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "segment stream stalled",
+                ))
+            })?;
+
+        let Some(chunk) = next else {
+            break;
+        };
+
         if cancel.is_cancelled() {
             return Err(KhukriError::Cancelled);
         }

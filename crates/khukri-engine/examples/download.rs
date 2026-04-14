@@ -14,13 +14,14 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use sqlx::sqlite::SqlitePoolOptions;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use khukri_engine::{
     db,
     config::{DownloadConfig, Priority, RetryConfig, ThrottleConfig},
-    start_download,
+    start_download_with_cancel,
 };
 
 #[tokio::main]
@@ -82,7 +83,20 @@ async fn main() {
 
     let start = Instant::now();
 
-    match start_download(config, pool).await {
+    let cancel = CancellationToken::new();
+    let download = start_download_with_cancel(config, pool, cancel.clone());
+    tokio::pin!(download);
+
+    let result = tokio::select! {
+        res = &mut download => res,
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("Received Ctrl+C, cancelling download...");
+            cancel.cancel();
+            download.await
+        }
+    };
+
+    match result {
         Ok(()) => {
 
             let elapsed = start.elapsed();
