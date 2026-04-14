@@ -178,53 +178,61 @@ Implement token-bucket rate limiting for bandwidth caps. Configurable at global 
 
 **Type:** Story  
 **Priority:** Highest  
-**Labels:** `extension`, `chromium`, `mv3`
+**Labels:** `extension`, `mv3`
 
 **Description:**  
-Create the Manifest V3 browser extension. The service worker intercepts `chrome.downloads.onCreated` events and forwards download metadata (URL, filename, size hint) to the Native Messaging host.
+Create the MV3 extension scaffold with a service worker that intercepts browser downloads and hands them off to the Native Messaging bridge.
 
 **Acceptance Criteria:**
-- [ ] `manifest.json` targets MV3 with `downloads` and `nativeMessaging` permissions
-- [ ] Downloads of size > 0 bytes are intercepted and cancelled in the browser, then handed off
-- [ ] Downloads from `chrome://`, `file://` are excluded (passthrough to browser)
-- [ ] Extension loads in Chrome and Edge without errors in `chrome://extensions`
+- [ ] `manifest.json` targets MV3 with `downloads` and `nativeMessaging` permissions.
+- [ ] Service worker intercepts `onCreated` and cancels browser download to hand-off.
 
 ---
 
-### KHU-202 · Native Messaging host registration (Windows + Linux)
+### KHU-202 · Automated Native Messaging Host Registration (The "Self-Installer")
 
 **Type:** Task  
 **Priority:** Highest  
-**Labels:** `native-messaging`, `ipc`, `installer`
+**Labels:** `native-messaging`, `installer`
 
 **Description:**  
-Register the Khukri Rust binary as a Native Messaging host so the Chrome extension can launch and communicate with it.
-
-- Windows: Write registry key `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.khukri.host`
-- Linux: Write manifest JSON to `~/.config/google-chrome/NativeMessagingHosts/com.khukri.host.json`
+Add a `--register` (or `--install`) flag to the Rust bridge binary that automatically detects the OS and writes the Manifest JSON/Registry keys.
 
 **Acceptance Criteria:**
-- [ ] Installer handles registration automatically on both OSes
-- [ ] Uninstaller removes the registration cleanly
-- [ ] `chrome.runtime.connectNative('com.khukri.host')` succeeds on a fresh install (manual QA)
-- [ ] Host process exits cleanly when the extension disconnects
+- [ ] Windows: Auto-write `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.khukri.host`.
+- [ ] Linux: Auto-write JSON to `~/.config/google-chrome/NativeMessagingHosts/`.
+- [ ] Path detection: Binary must find its own absolute path for the manifest `path` field.
 
 ---
 
-### KHU-203 · Named Pipe / Unix Domain Socket IPC bridge in Rust
+### KHU-203 · Rust Native Messaging Bridge (stdin/stdout protocol)
 
 **Type:** Story  
 **Priority:** Highest  
-**Labels:** `rust`, `ipc`, `native-messaging`
+**Labels:** `rust`, `ipc`
 
 **Description:**  
-Implement the Rust side of the Native Messaging bridge. Messages are length-prefixed JSON (Chrome NM protocol: 4-byte LE length header + UTF-8 JSON body) over stdin/stdout.
+Implement the Rust Native Messaging bridge over stdin/stdout with protocol-safe framing and output handling.
 
 **Acceptance Criteria:**
-- [ ] `NativeMessagingCodec` correctly encodes/decodes length-prefixed JSON frames
-- [ ] Incoming `{ type: "queue_download", url, filename, size }` messages are forwarded to the engine queue
-- [ ] Outgoing `{ type: "progress", id, bytes_done, speed_bps }` events sent back to extension
-- [ ] Unit tests for codec encode/decode round-trip
+- [ ] Implement 4-byte native-endian length header logic for Chrome protocol.
+- [ ] `khukri-engine` updated to accept `CustomHeaders` (Cookies/User-Agent) from bridge.
+- [ ] STDOUT logic ensures ZERO extra `println!` calls (to prevent protocol corruption).
+
+---
+
+### KHU-206 · Native Messaging Mock Test Suite
+
+**Type:** Task  
+**Priority:** Medium  
+**Labels:** `testing`, `python`
+
+**Description:**  
+Create a Python or Rust script to simulate a browser. It sends 4-byte-prefixed JSON to the bridge via `stdin` and validates the response.
+
+**Acceptance Criteria:**
+- [ ] Script successfully triggers a 10MB download through the bridge.
+- [ ] Validates JSON response from bridge for progress updates.
 
 ---
 
