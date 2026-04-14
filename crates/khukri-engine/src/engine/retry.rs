@@ -41,6 +41,10 @@ where
                 // Never retry permanent failures.
                 return Err(KhukriError::PermanentError { status, url });
             }
+            Err(KhukriError::Cancelled) => {
+                // Never retry user-requested cancellation.
+                return Err(KhukriError::Cancelled);
+            }
             Err(e) => {
                 if attempt >= config.max_retries {
                     return Err(KhukriError::MaxRetriesExceeded { attempts: attempt });

@@ -20,25 +20,30 @@ impl Segment {
 
 /// Split `total_bytes` into `thread_count` contiguous, non-overlapping byte ranges.
 pub fn build_segments(total_bytes: u64, thread_count: u8) -> Vec<Segment> {
-    let n = thread_count as u64;
-    let chunk = total_bytes / n;
+    if total_bytes == 0 || thread_count == 0 {
+        return Vec::new();
+    }
 
-    (0..n)
-        .map(|i| {
-            let start = i * chunk;
-            let end = if i == n - 1 {
-                total_bytes - 1
-            } else {
-                (i + 1) * chunk - 1
-            };
-            Segment {
-                index: i as usize,
-                start_byte: start,
-                end_byte: end,
-                completed: false,
-            }
-        })
-        .collect()
+    let n = (thread_count as u64).min(total_bytes);
+    let base = total_bytes / n;
+    let remainder = total_bytes % n;
+
+    let mut start = 0u64;
+    let mut out = Vec::with_capacity(n as usize);
+
+    for i in 0..n {
+        let len = base + u64::from(i < remainder);
+        let end = start + len - 1;
+        out.push(Segment {
+            index: i as usize,
+            start_byte: start,
+            end_byte: end,
+            completed: false,
+        });
+        start = end + 1;
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -77,5 +82,19 @@ mod tests {
         for w in segs.windows(2) {
             assert_eq!(w[0].end_byte + 1, w[1].start_byte);
         }
+    }
+
+    #[test]
+    fn test_tiny_file_caps_segments() {
+        let segs = build_segments(1, 4);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].start_byte, 0);
+        assert_eq!(segs[0].end_byte, 0);
+    }
+
+    #[test]
+    fn test_zero_file_has_no_segments() {
+        let segs = build_segments(0, 4);
+        assert!(segs.is_empty());
     }
 }

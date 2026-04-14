@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::path::PathBuf;
 
+use crate::error::{KhukriError, Result};
+
 // ── Priority ──────────────────────────────────────────────────────────────────
 
 /// Download priority — determines scheduling order in the queue.
@@ -96,5 +98,57 @@ impl DownloadConfig {
             priority: Priority::default(),
             throttle: ThrottleConfig::default(),
         }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.url.trim().is_empty() {
+            return Err(KhukriError::InvalidConfig {
+                field: "url",
+                reason: "URL must not be empty".to_string(),
+            });
+        }
+
+        if self.file_path.as_os_str().is_empty() {
+            return Err(KhukriError::InvalidConfig {
+                field: "file_path",
+                reason: "output path must not be empty".to_string(),
+            });
+        }
+
+        if let Some(threads) = self.override_threads {
+            if threads == 0 || threads > 128 {
+                return Err(KhukriError::InvalidConfig {
+                    field: "override_threads",
+                    reason: "must be in range 1..=128".to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::KhukriError;
+
+    #[test]
+    fn test_validate_rejects_zero_override_threads() {
+        let mut cfg = DownloadConfig::new("https://example.com/file.bin", "out.bin");
+        cfg.override_threads = Some(0);
+        assert!(matches!(
+            cfg.validate(),
+            Err(KhukriError::InvalidConfig {
+                field: "override_threads",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_validate_accepts_reasonable_config() {
+        let cfg = DownloadConfig::new("https://example.com/file.bin", "out.bin");
+        assert!(cfg.validate().is_ok());
     }
 }

@@ -126,6 +126,12 @@ struct FlakyState {
     remaining_fails: Arc<AtomicU32>,
 }
 
+#[derive(Clone)]
+struct CountedRangeState {
+    data: Arc<Vec<u8>>,
+    range_calls: Arc<AtomicU32>,
+}
+
 async fn flaky_handler(
     headers: HeaderMap,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
@@ -150,6 +156,16 @@ async fn flaky_handler(
             .unwrap();
     }
 
+    range_handler(headers, State(s.data)).await
+}
+
+async fn counted_range_handler(
+    headers: HeaderMap,
+    State(s): State<CountedRangeState>,
+) -> Response<axum::body::Body> {
+    if headers.get("range").is_some() {
+        s.range_calls.fetch_add(1, Ordering::SeqCst);
+    }
     range_handler(headers, State(s.data)).await
 }
 
@@ -278,4 +294,68 @@ async fn test_permanent_403_not_retried() {
         1,
         "403 must not trigger retries"
     );
+}
+
+/// 5. Resume flow — mark one segment incomplete and verify only that segment is fetched.
+#[tokio::test]
+async fn test_resume_download_fetches_only_incomplete_segments() {
+    let data = test_data();
+    let range_calls = Arc::new(AtomicU32::new(0));
+
+    let addr = spawn_server(
+        Router::new()
+            .route("/file", get(counted_range_handler))
+            .with_state(CountedRangeState {
+                data: data.clone(),
+                range_calls: range_calls.clone(),
+            }),
+    )
+    .await;
+
+    let out = tmp("khukri_it_resume.bin");
+    let _ = std::fs::remove_file(&out);
+    let pool = make_pool("resume").await;
+    let url = format!("http://{addr}/file");
+
+    start_download(cfg(url.clone(), &out), pool.clone())
+        .await
+        .expect("initial download failed");
+
+    range_calls.store(0, Ordering::SeqCst);
+
+    let download_id: String = sqlx::query_scalar(
+        "SELECT id FROM downloads WHERE url = ? AND file_path = ?",
+    )
+    .bind(&url)
+    .bind(out.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("download row not found");
+
+    let segment_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM segments WHERE download_id = ? ORDER BY start_byte LIMIT 1",
+    )
+    .bind(&download_id)
+    .fetch_one(&pool)
+    .await
+    .expect("segment row not found");
+
+    sqlx::query("UPDATE segments SET completed = 0 WHERE id = ?")
+        .bind(segment_id)
+        .execute(&pool)
+        .await
+        .expect("failed to mark segment incomplete");
+
+    start_download(cfg(url, &out), pool.clone())
+        .await
+        .expect("resume download failed");
+
+    assert_eq!(
+        range_calls.load(Ordering::SeqCst),
+        1,
+        "resume should fetch only one incomplete segment"
+    );
+
+    let got = std::fs::read(&out).expect("output file missing");
+    assert_eq!(sha256(&got), sha256(&data));
 }

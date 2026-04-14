@@ -32,7 +32,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 // ── Downloads ─────────────────────────────────────────────────────────────────
 
-pub async fn insert_download(
+pub async fn upsert_download(
     pool: &SqlitePool,
     id: &str,
     url: &str,
@@ -48,7 +48,12 @@ pub async fn insert_download(
     let total = total_bytes.map(|b| b as i64);
     sqlx::query(
         "INSERT INTO downloads (id, url, file_path, total_bytes, status, priority, created_at)
-         VALUES (?, ?, ?, ?, 'queued', ?, ?)",
+         VALUES (?, ?, ?, ?, 'queued', ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            url = excluded.url,
+            file_path = excluded.file_path,
+            total_bytes = COALESCE(downloads.total_bytes, excluded.total_bytes),
+            priority = excluded.priority",
     )
     .bind(id)
     .bind(url)
@@ -99,6 +104,14 @@ pub async fn insert_segments(
         .await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+pub async fn delete_segments(pool: &SqlitePool, download_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM segments WHERE download_id = ?")
+        .bind(download_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

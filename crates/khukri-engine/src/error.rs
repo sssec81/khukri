@@ -34,6 +34,9 @@ pub enum KhukriError {
 
     #[error("Task join error: {0}")]
     Join(#[from] tokio::task::JoinError),
+
+    #[error("Invalid configuration for '{field}': {reason}")]
+    InvalidConfig { field: &'static str, reason: String },
 }
 
 pub type Result<T> = std::result::Result<T, KhukriError>;
