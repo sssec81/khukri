@@ -1,0 +1,21 @@
+[package]
+name = "khukri-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "http2", "rustls-tls"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
+thiserror = "1"
+tracing = "0.1"
+futures = "0.3"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

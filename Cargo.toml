@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/khukri-engine"]
+resolver = "2"

@@ -1,0 +1,157 @@
+# Khukri — CLAUDE.md
+
+## Project Overview
+
+**Khukri** is a high-performance, open-source download manager built to replace IDM. Written in Rust + Tauri 2.0. Zero telemetry, zero bloat.
+
+- **PRD:** `docs/khukri-prd.md` (LOCKED v1.1 — source of truth)
+- **Tickets:** `docs/khukri-jira-tickets.md`
+
+---
+
+## Architecture
+
+```
+khukri/
+├── crates/
+│   └── khukri-engine/       # Core download engine (Rust library crate)
+│       ├── src/
+│       │   ├── engine/      # Segmenting, HTTP, throttling, queue
+│       │   ├── db/          # SQLite persistence (sqlx)
+│       │   ├── error.rs
+│       │   └── lib.rs
+├── src-tauri/               # Tauri 2.0 backend (Tauri commands, IPC, tray)
+├── src/                     # Frontend (WebView UI — downloads list, settings)
+├── extension/               # MV3 Chrome extension (service worker, content script)
+├── sidecar/                 # Bundled yt-dlp + FFmpeg binaries
+│   ├── yt-dlp.version
+│   └── yt-dlp.sha256
+├── i18n/
+│   └── en.json              # All UI strings — no hardcoded strings in components
+└── docs/
+    ├── khukri-prd.md
+    └── khukri-jira-tickets.md
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Rust (backend), TypeScript (extension + frontend) |
+| Framework | Tauri 2.0 |
+| Async runtime | Tokio (full features) |
+| HTTP client | Reqwest (HTTP/2 + keep-alive + stream) |
+| Persistence | SQLite via `sqlx` (async, migrations via `sqlx::migrate!`) |
+| Browser extension | Manifest V3 (Chromium); MV2 Firefox planned Sprint 2.5 |
+| IPC (browser ↔ Rust) | Named Pipes (Windows) / Unix Domain Sockets (Linux/macOS) |
+| Internal IPC | Tauri command/event system |
+| Sidecars | Pinned yt-dlp (tagged release) + minimal FFmpeg (GPL build) |
+
+---
+
+## Key Formulas & Constants
+
+- **Thread count:** `threads = clamp(floor(file_size_MB / 50), 4, 64)`
+- **Retry back-off:** `delay = base_delay_ms * 2^attempt ± 10% jitter` (default: 3 retries, base 1s)
+- **Max concurrent downloads:** 3 (configurable)
+- **Progress emit interval:** 500ms
+- **Blade UI delay:** 1.5s after playback starts
+- **yt-dlp update check interval:** 24h
+
+---
+
+## Performance Targets
+
+| Metric | Target |
+|---|---|
+| RAM (Khukri process, 10 concurrent downloads) | ≤ 80 MB (excludes yt-dlp child processes) |
+| Cold-start (Windows) | ≤ 800 ms to interactive UI |
+| Time-to-first-segment | ≤ 500 ms from user initiating download |
+
+---
+
+## Brand Colors
+
+| Name | Hex | Usage |
+|---|---|---|
+| Gurkha Green | `#2D5A27` | Primary actions, logo |
+| Obsidian | `#0B0C10` | Background (dark mode) |
+| Tiger Amber | `#FF9F1C` | Speed indicators, warnings, accents |
+
+Tiger Amber on Obsidian must meet WCAG AA contrast (≥ 4.5:1). Verify on light backgrounds.
+
+---
+
+## SQLite Schema
+
+State DB path: `$APP_DATA/khukri/state.db`
+
+```sql
+CREATE TABLE downloads (
+  id TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  total_bytes INTEGER,
+  status TEXT NOT NULL,  -- queued | active | paused | complete | failed
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  download_id TEXT NOT NULL REFERENCES downloads(id),
+  start_byte INTEGER NOT NULL,
+  end_byte INTEGER NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0
+);
+```
+
+Settings path: `$APP_DATA/khukri/settings.json`
+
+---
+
+## Native Messaging Protocol
+
+Chrome NM wire format: **4-byte little-endian length header + UTF-8 JSON body** (over stdin/stdout).
+
+Key message types:
+- Incoming: `{ type: "queue_download", url, filename, size, quality?, source? }`
+- Outgoing: `{ type: "progress", id, bytes_done, speed_bps }`
+
+Host ID: `com.khukri.host`
+
+---
+
+## Non-Negotiables
+
+- **Zero telemetry.** No outbound requests except: user-initiated downloads, yt-dlp update check (24h, opt-out toggle), self-update check.
+- **No hardcoded UI strings.** All strings in `i18n/en.json`. Use `t('key')` helper everywhere.
+- **No `master` HEAD tracking for yt-dlp.** Tagged releases only, SHA-256 verified before any swap.
+- **Atomic file ops.** Pre-allocate full file size before any segment writes. Hot-swap sidecars via write-to-temp → verify → rename.
+- **`clippy --deny warnings` must pass.** Zero warnings policy enforced in CI.
+- **License:** GPLv3. Bundled yt-dlp is Unlicense. FFmpeg must be GPL-compatible (no libfdk-aac, no OpenH264 non-free).
+
+---
+
+## Sprint Map
+
+| Sprint | Deliverable | Key Tickets |
+|---|---|---|
+| 1 | Download engine (headless, CLI-verifiable) | KHU-101 → KHU-108 |
+| 2 | Browser extension + Native Messaging bridge | KHU-201 → KHU-205 |
+| 3 | Tauri GUI (list, settings, tray, theming) | KHU-301 → KHU-305 |
+| 4 | yt-dlp + FFmpeg + auto-updater | KHU-401 → KHU-406 |
+| 5 | CI/CD, code signing, reproducible builds | KHU-501 → KHU-506 |
+
+Cross-cutting: KHU-601 (i18n), KHU-602 (a11y), KHU-603 (zero-telemetry audit)
+
+---
+
+## CI Gates (Sprint 5)
+
+- `cargo audit` — fails on any RUSTSEC advisory ≥ Medium severity
+- `cargo clippy --all-targets --deny warnings`
+- `cargo fmt --check`
+- Build matrix: Windows x64/ARM64 (`.msi`, `.exe`), macOS universal (`.dmg`), Linux x64 (`.AppImage`, `.deb`)
+- Reproducible build: two independent runs, SHA-256 hashes must match

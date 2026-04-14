@@ -1,0 +1,48 @@
+# Rust / Cargo
+target/
+Cargo.lock
+
+# SQLite state databases (runtime artifacts)
+*.db
+*.db-shm
+*.db-wal
+
+# sqlx offline cache (generated, not needed in repo yet)
+.sqlx/
+
+# Tauri (Sprint 3+)
+src-tauri/target/
+dist/
+.tauri/
+
+# Node / Extension (Sprint 2+)
+node_modules/
+extension/dist/
+extension/.cache/
+
+# Sidecar binaries (Sprint 4+) — tracked by version file, not the binary
+sidecar/yt-dlp
+sidecar/yt-dlp.exe
+sidecar/ffmpeg
+sidecar/ffmpeg.exe
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Env / secrets — never commit
+.env
+.env.*
+secrets/
+
+# CI signing artifacts
+*.pfx
+*.p12
+*.cer
