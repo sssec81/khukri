@@ -8,8 +8,9 @@ use crate::error::{KhukriError, Result};
 
 /// Download priority — determines scheduling order in the queue.
 /// BinaryHeap is a max-heap, so High > Normal > Low by the Ord impl below.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Priority {
+    #[default]
     Low,
     Normal,
     High,
@@ -42,12 +43,6 @@ impl PartialOrd for Priority {
 impl Ord for Priority {
     fn cmp(&self, other: &Self) -> Ordering {
         self.rank().cmp(&other.rank())
-    }
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Priority::Normal
     }
 }
 
@@ -119,29 +114,28 @@ impl DownloadConfig {
         }
 
         if let Some(root) = &self.allowed_root {
-            let canonical_root = fs::canonicalize(root).map_err(|e| KhukriError::InvalidConfig {
-                field: "allowed_root",
-                reason: format!("cannot canonicalize allowed root: {e}"),
-            })?;
+            let canonical_root =
+                fs::canonicalize(root).map_err(|e| KhukriError::InvalidConfig {
+                    field: "allowed_root",
+                    reason: format!("cannot canonicalize allowed root: {e}"),
+                })?;
 
             let target_base = if self.file_path.exists() {
                 self.file_path.clone()
             } else {
-                self.file_path
-                    .parent()
-                    .map(PathBuf::from)
-                    .ok_or_else(|| KhukriError::InvalidConfig {
+                self.file_path.parent().map(PathBuf::from).ok_or_else(|| {
+                    KhukriError::InvalidConfig {
                         field: "file_path",
                         reason: "output path must have a parent directory".to_string(),
-                    })?
+                    }
+                })?
             };
 
-            let canonical_target_base = fs::canonicalize(&target_base).map_err(|e| {
-                KhukriError::InvalidConfig {
+            let canonical_target_base =
+                fs::canonicalize(&target_base).map_err(|e| KhukriError::InvalidConfig {
                     field: "file_path",
                     reason: format!("cannot canonicalize output base path: {e}"),
-                }
-            })?;
+                })?;
 
             let canonical_target = if self.file_path.exists() {
                 canonical_target_base

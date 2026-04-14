@@ -70,9 +70,14 @@ fn cfg(url: impl Into<String>, out: impl Into<std::path::PathBuf>) -> DownloadCo
         file_path: out.into(),
         allowed_root: None,
         override_threads: Some(4),
-        retry: RetryConfig { max_retries: 3, base_delay_ms: 1 },
+        retry: RetryConfig {
+            max_retries: 3,
+            base_delay_ms: 1,
+        },
         priority: Priority::Normal,
-        throttle: ThrottleConfig { bytes_per_sec: None },
+        throttle: ThrottleConfig {
+            bytes_per_sec: None,
+        },
     }
 }
 
@@ -83,7 +88,10 @@ fn tmp(name: &str) -> std::path::PathBuf {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// Serves data with full Range-request support (returns 206 for Range, 200 for HEAD/full GET).
-async fn range_handler(headers: HeaderMap, State(data): State<Arc<Vec<u8>>>) -> Response<axum::body::Body> {
+async fn range_handler(
+    headers: HeaderMap,
+    State(data): State<Arc<Vec<u8>>>,
+) -> Response<axum::body::Body> {
     let total = data.len() as u64;
 
     if let Some(rh) = headers.get("range") {
@@ -117,7 +125,11 @@ fn parse_range(s: &str, total: u64) -> Option<(u64, u64)> {
     let mut it = s.split('-');
     let start: u64 = it.next()?.parse().ok()?;
     let end_str = it.next()?;
-    let end = if end_str.is_empty() { total - 1 } else { end_str.parse().ok()? };
+    let end = if end_str.is_empty() {
+        total - 1
+    } else {
+        end_str.parse().ok()?
+    };
     (start <= end && end < total).then_some((start, end))
 }
 
@@ -147,7 +159,11 @@ async fn flaky_handler(
     if headers.get("range").is_some()
         && s.remaining_fails
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                if n > 0 { Some(n - 1) } else { None }
+                if n > 0 {
+                    Some(n - 1)
+                } else {
+                    None
+                }
             })
             .is_ok()
     {
@@ -189,9 +205,12 @@ async fn test_segmented_download_sha256() {
     let out = tmp("khukri_it_seg.bin");
     let _ = std::fs::remove_file(&out);
 
-    start_download(cfg(format!("http://{addr}/file"), &out), make_pool("seg").await)
-        .await
-        .expect("segmented download failed");
+    start_download(
+        cfg(format!("http://{addr}/file"), &out),
+        make_pool("seg").await,
+    )
+    .await
+    .expect("segmented download failed");
 
     let got = std::fs::read(&out).expect("output file missing");
     assert_eq!(got.len(), data.len(), "file size mismatch");
@@ -255,9 +274,12 @@ async fn test_retry_on_transient_5xx() {
     let out = tmp("khukri_it_retry.bin");
     let _ = std::fs::remove_file(&out);
 
-    start_download(cfg(format!("http://{addr}/file"), &out), make_pool("retry").await)
-        .await
-        .expect("download should succeed after retries");
+    start_download(
+        cfg(format!("http://{addr}/file"), &out),
+        make_pool("retry").await,
+    )
+    .await
+    .expect("download should succeed after retries");
 
     let got = std::fs::read(&out).unwrap();
     assert_eq!(got.len(), data.len());
@@ -325,14 +347,13 @@ async fn test_resume_download_fetches_only_incomplete_segments() {
 
     range_calls.store(0, Ordering::SeqCst);
 
-    let download_id: String = sqlx::query_scalar(
-        "SELECT id FROM downloads WHERE url = ? AND file_path = ?",
-    )
-    .bind(&url)
-    .bind(out.to_string_lossy().to_string())
-    .fetch_one(&pool)
-    .await
-    .expect("download row not found");
+    let download_id: String =
+        sqlx::query_scalar("SELECT id FROM downloads WHERE url = ? AND file_path = ?")
+            .bind(&url)
+            .bind(out.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("download row not found");
 
     let segment_id: i64 = sqlx::query_scalar(
         "SELECT id FROM segments WHERE download_id = ? ORDER BY start_byte LIMIT 1",
@@ -393,7 +414,9 @@ async fn test_spawn_download_reports_progress() {
             if snapshot.status == DownloadStatus::Complete {
                 break snapshot;
             }
-            rx.changed().await.expect("progress channel closed unexpectedly");
+            rx.changed()
+                .await
+                .expect("progress channel closed unexpectedly");
         }
     })
     .await

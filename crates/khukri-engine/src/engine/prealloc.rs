@@ -1,5 +1,5 @@
-use tokio::fs::File;
 use crate::error::{KhukriError, Result};
+use tokio::fs::File;
 
 /// Pre-allocate `size` bytes on disk before segment writes.
 /// Prevents fragmentation and ensures we fail fast on insufficient space.
@@ -28,15 +28,18 @@ pub async fn preallocate(file: &File, size: u64) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn macos_preallocate_stub(size: u64) {
-    tracing::debug!(bytes = size, "macOS preallocation fallback currently uses set_len");
+    tracing::debug!(
+        bytes = size,
+        "macOS preallocation fallback currently uses set_len"
+    );
 }
 
 /// Use fallocate(2) to physically reserve disk blocks on Linux.
 /// Spawned on the blocking thread pool because fallocate can block.
 #[cfg(target_os = "linux")]
 async fn linux_fallocate(file: &File, size: u64) -> Result<()> {
-    use std::os::unix::io::AsRawFd;
     use nix::fcntl::{fallocate, FallocateFlags};
+    use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
 

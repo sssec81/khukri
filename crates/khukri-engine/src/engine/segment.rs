@@ -16,6 +16,10 @@ impl Segment {
     pub fn len(&self) -> u64 {
         self.end_byte - self.start_byte + 1
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Split `total_bytes` into `thread_count` contiguous, non-overlapping byte ranges.

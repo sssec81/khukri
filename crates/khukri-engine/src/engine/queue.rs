@@ -110,7 +110,11 @@ impl DownloadQueue {
             priority = ?config.priority,
             "Queued"
         );
-        self.inner.lock().await.pending.push(PendingEntry { config });
+        self.inner
+            .lock()
+            .await
+            .pending
+            .push(PendingEntry { config });
         self.notify.notify_one();
     }
 
@@ -161,7 +165,10 @@ impl DownloadQueue {
             tokio::spawn(async move {
                 info!(url = %url, "Download started");
                 // Decrement active_count via a drop guard so it runs even on panic.
-                let _guard = ActiveGuard { inner: inner.clone(), notify: notify.clone() };
+                let _guard = ActiveGuard {
+                    inner: inner.clone(),
+                    notify: notify.clone(),
+                };
                 match start_download(entry.config, pool).await {
                     Ok(()) => info!(url = %url, "Download complete"),
                     Err(e) => error!(url = %url, error = %e, "Download failed"),
@@ -186,9 +193,15 @@ mod tests {
     #[test]
     fn test_priority_ordering() {
         let mut heap: BinaryHeap<PendingEntry> = BinaryHeap::new();
-        heap.push(PendingEntry { config: make_config("low.bin", Priority::Low) });
-        heap.push(PendingEntry { config: make_config("high.bin", Priority::High) });
-        heap.push(PendingEntry { config: make_config("normal.bin", Priority::Normal) });
+        heap.push(PendingEntry {
+            config: make_config("low.bin", Priority::Low),
+        });
+        heap.push(PendingEntry {
+            config: make_config("high.bin", Priority::High),
+        });
+        heap.push(PendingEntry {
+            config: make_config("normal.bin", Priority::Normal),
+        });
 
         assert_eq!(heap.pop().unwrap().config.priority, Priority::High);
         assert_eq!(heap.pop().unwrap().config.priority, Priority::Normal);

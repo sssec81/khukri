@@ -1,5 +1,5 @@
-use sqlx::SqlitePool;
 use crate::error::Result;
+use sqlx::SqlitePool;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

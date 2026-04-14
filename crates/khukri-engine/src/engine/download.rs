@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
@@ -140,7 +140,11 @@ impl ProgressState {
             p.eta_seconds = eta_seconds;
             p.segments_done = self.segments_done.load(Ordering::Relaxed);
             let seg_total = self.segments_total.load(Ordering::Relaxed);
-            p.segments_total = if seg_total == 0 { None } else { Some(seg_total) };
+            p.segments_total = if seg_total == 0 {
+                None
+            } else {
+                Some(seg_total)
+            };
         });
     }
 
@@ -168,7 +172,12 @@ pub fn spawn_download(config: DownloadConfig, pool: SqlitePool) -> DownloadHandl
     });
 
     let cancel = CancellationToken::new();
-    let join = tokio::spawn(start_download_internal(config, pool, cancel.clone(), Some(tx)));
+    let join = tokio::spawn(start_download_internal(
+        config,
+        pool,
+        cancel.clone(),
+        Some(tx),
+    ));
 
     DownloadHandle {
         id: download_id,
@@ -213,7 +222,9 @@ async fn start_download_internal(
     let progress = progress_tx.map(ProgressState::new);
 
     if cancel.is_cancelled() {
-        db::set_download_status(&pool, &download_id, "paused").await.ok();
+        db::set_download_status(&pool, &download_id, "paused")
+            .await
+            .ok();
         if let Some(p) = &progress {
             p.set_status(DownloadStatus::Paused);
         }
@@ -370,6 +381,7 @@ async fn start_download_internal(
 
 // ── Segmented path ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn segmented_download(
     config: &DownloadConfig,
     pool: &SqlitePool,
@@ -385,8 +397,10 @@ async fn segmented_download(
     info!(thread_count, total_bytes, "Segmented download");
 
     let segments = build_segments(total_bytes, thread_count);
-    let seg_pairs: Vec<(u64, u64)> =
-        segments.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+    let seg_pairs: Vec<(u64, u64)> = segments
+        .iter()
+        .map(|s| (s.start_byte, s.end_byte))
+        .collect();
 
     if let Some(p) = &progress {
         p.set_totals(Some(total_bytes), Some(segments.len() as u32));
@@ -416,7 +430,11 @@ async fn segmented_download(
     drop(file);
 
     let incomplete = db::get_incomplete_segments(pool, download_id).await?;
-    info!("{}/{} segment(s) remaining", incomplete.len(), segments.len());
+    info!(
+        "{}/{} segment(s) remaining",
+        incomplete.len(),
+        segments.len()
+    );
     let fail_fast = CancellationToken::new();
 
     let mut handles = Vec::with_capacity(incomplete.len());
@@ -538,6 +556,7 @@ async fn segmented_download(
 
 // ── Streaming path ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn streaming_download(
     config: &DownloadConfig,
     client: &Client,
@@ -640,6 +659,7 @@ async fn streaming_download(
 
 // ── Segment fetch ─────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_segment(
     client: &Client,
     url: &str,
@@ -667,7 +687,10 @@ async fn fetch_segment(
     let status = response.status().as_u16();
 
     if is_permanent_failure(status) {
-        return Err(KhukriError::PermanentError { status, url: url.to_string() });
+        return Err(KhukriError::PermanentError {
+            status,
+            url: url.to_string(),
+        });
     }
 
     // Must be 206 Partial Content.
