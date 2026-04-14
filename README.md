@@ -74,7 +74,7 @@ cargo build -p khukri-engine
 
 ### Test
 
-Runs 12 unit tests + 4 integration tests (local HTTP server, no network required):
+Runs 16 unit tests + 5 integration tests (local HTTP server, no network required):
 
 ```bash
 cargo test -p khukri-engine
@@ -102,19 +102,20 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 | Module | Description |
 |---|---|
 | `engine/segment.rs` | Thread count formula: `clamp(floor(file_size_MB / 50), 4, 64)` |
-| `engine/download.rs` | Segmented parallel download + streaming fallback (no Content-Length) |
+| `engine/download.rs` | Segmented parallel download + streaming fallback (no Content-Length), deterministic download IDs, cancellation-aware entrypoint |
 | `engine/retry.rs` | Exponential back-off with ±10% jitter; permanent errors (403, 404) never retried |
 | `engine/prealloc.rs` | `fallocate` (Linux) / `SetEndOfFile` (Windows) / `ftruncate` (macOS) before writes |
 | `engine/throttle.rs` | Token-bucket rate limiter; shared across segment tasks for accurate per-download cap |
 | `engine/queue.rs` | Priority queue (High / Normal / Low); `max_concurrent` hot-configurable at runtime |
-| `db/mod.rs` | SQLite persistence for download + segment state; transactional segment insert |
+| `db/mod.rs` | SQLite persistence for download + segment state; transactional segment insert + idempotent upsert/reset helpers |
+| `config.rs` | Input validation for URL/path/thread override bounds before execution |
 
 ### Test coverage
 
 | Type | Count | What |
 |---|---|---|
-| Unit | 12 | Thread count formula, retry logic (2 failures → success, permanent error, exhaustion), token bucket (no-sleep, deficit sleep, unlimited), priority ordering |
-| Integration | 4 | SHA-256 verified segmented download, streaming fallback, retry on transient 5xx, permanent 403 not retried |
+| Unit | 16 | Thread count formula (including tiny/zero-byte edge cases), retry logic (2 failures → success, permanent error, exhaustion), token bucket (no-sleep, deficit sleep, unlimited), priority ordering, config validation |
+| Integration | 5 | SHA-256 verified segmented download, streaming fallback, retry on transient 5xx, permanent 403 not retried, resume only re-fetches incomplete segments |
 
 ---
 
@@ -123,10 +124,12 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 - **Thread count:** `clamp(floor(file_size_MB / 50), 4, 64)` — one thread per 50 MB, bounded 4–64
 - **TLS:** rustls (pure Rust — no system OpenSSL dependency)
 - **Segment writes:** each task opens the file independently and seeks to its byte offset — no mutex on the file, no overlapping ranges
-- **Pause/resume:** segment state in SQLite; only incomplete segments are fetched on resume
+- **Pause/resume:** deterministic download ID (URL + output path) with SQLite segment state; only incomplete segments are fetched on resume
 - **Throttling:** token bucket shared across all segment tasks; sliced to ≤ 1s of burst to handle large chunks correctly
 - **Pre-allocation:** reserves full disk space before any segment writes — prevents fragmentation and catches out-of-space early
 - **Queue slot safety:** RAII drop guard ensures `active_count` is always decremented even if a download task panics
+- **Cancellation:** cooperative cancellation support via `start_download_with_cancel(..., CancellationToken)` updates state to `paused`
+- **Config safety:** invalid runtime config (empty URL/path, invalid thread override) is rejected early with explicit errors
 
 ---
 
