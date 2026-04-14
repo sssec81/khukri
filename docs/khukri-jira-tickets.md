@@ -196,12 +196,13 @@ Create the MV3 extension scaffold with a service worker that intercepts browser 
 **Labels:** `native-messaging`, `installer`
 
 **Description:**  
-Add a `--register` (or `--install`) flag to the Rust bridge binary that automatically detects the OS and writes the Manifest JSON/Registry keys.
+Add a `--register` (or `--repair`) flag to the Rust bridge binary that automatically detects the OS and writes or repairs the Manifest JSON/Registry keys.
 
 **Acceptance Criteria:**
 - [ ] Windows: Auto-write `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.khukri.host`.
 - [ ] Linux: Auto-write JSON to `~/.config/google-chrome/NativeMessagingHosts/`.
 - [ ] Path detection: Binary must find its own absolute path for the manifest `path` field.
+- [ ] Re-running the registration command repairs moved installs by rewriting the absolute path.
 
 ---
 

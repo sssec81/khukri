@@ -67,3 +67,41 @@ Before shipping extension UX, run a bridge-first stress scenario:
 4. Relaunch bridge and confirm resume only fetches incomplete segments.
 
 Passing this test early reduces uncertainty before Sprint 3 UI integration.
+
+## MV3 Bridge Notes
+
+Chrome MV3 service workers are ephemeral by design. That matters here because Khukri's browser side is not a general web app; it is a coordinator for a local native process.
+
+### Service Worker Keepalive
+
+Risk:
+- MV3 service workers can suspend after inactivity, so a local WebSocket bridge can be dropped when the worker sleeps.
+- A reconnect loop adds extra state and failure modes without giving Khukri anything the native bridge actually needs.
+
+Mitigation:
+- Prefer Native Messaging over a localhost WebSocket server for Sprint 2.
+- Use `chrome.runtime.connectNative()` so the browser owns the port lifecycle and the native process remains tied to the active connection.
+- If long-running coordination is ever needed outside the native port, evaluate an offscreen document as a fallback only after the native path proves insufficient.
+
+### Native Messaging vs WebSockets
+
+| Feature | WebSockets | Native Messaging |
+|---|---|---|
+| Persistence | Can drop when the SW suspends | Tied to the native port lifecycle |
+| Security | Requires a local server and exposed port handling | OS-level bridge with no localhost port exposure |
+| Protocol | JSON over TCP | JSON framed with a 4-byte length header over stdin/stdout |
+| Installation | Just the extension | Requires host manifest registration |
+
+### Host Manifest Installation Plan
+
+Khukri should handle host registration with a small binary flag or installer command instead of asking the user to hand-edit files.
+
+Preferred plan:
+- Add a `--register` / `--repair` flow to the Rust bridge binary.
+- Detect the OS at runtime and write the Native Messaging host manifest to the correct location.
+- Recompute the binary's absolute path during repair so moved installs can be fixed without manual cleanup.
+
+This keeps the user flow simple:
+- First run: register the host.
+- After moving the install: run repair and rewrite the manifest path.
+- If the browser/bridge disconnects: rely on the engine's existing cancel/pause path to preserve state.
