@@ -105,3 +105,65 @@ This keeps the user flow simple:
 - First run: register the host.
 - After moving the install: run repair and rewrite the manifest path.
 - If the browser/bridge disconnects: rely on the engine's existing cancel/pause path to preserve state.
+
+## Sprint 2: Browser IPC Trap List
+
+Sprint 2 (The Sniffer) is the most unpredictable phase because it moves from a controlled Rust engine environment into browser IPC behavior.
+
+### 1. Service Worker Heartbeat Problem
+
+Risk:
+- In MV3, background logic runs in a service worker that can sleep when idle.
+- If it sleeps mid-transfer, extension-side coordination can drop.
+
+Practical fix:
+- Use `chrome.runtime.connectNative()` for a long-lived native port.
+- Avoid relying on one-off `sendNativeMessage()` for active transfer coordination.
+
+### 2. Stray Print Protocol Crash
+
+Risk:
+- Native Messaging expects strict framing: 4-byte unsigned length header + JSON payload.
+- Any accidental stdout text (for example, `println!`) corrupts framing.
+
+Practical fix:
+- Never write debug text to stdout in the bridge process.
+- Send logs to stderr or a file-backed logger.
+
+### 3. JSON Serialization and Header Parsing
+
+Risk:
+- Rust/JS schema drift can break decoding when optional fields are omitted.
+- Incorrect header parsing can break interoperability.
+
+Practical fix:
+- Use serde defaults for optional fields where appropriate.
+- Parse/write the framing header consistently (little-endian per Chrome Native Messaging protocol).
+
+### 4. Windows Host Manifest Path Escaping
+
+Risk:
+- Unescaped Windows backslashes can produce invalid JSON host manifests.
+- Result is a host-not-found error even when binary exists.
+
+Practical fix:
+- Serialize manifest JSON programmatically (do not hand-build path strings).
+- Ensure generated JSON escapes path separators correctly.
+
+### 5. Extension ID Mismatch During Development
+
+Risk:
+- `allowed_origins` must match the actual extension ID.
+- Unpacked dev reloads can change IDs if a stable key is not used.
+
+Practical fix:
+- Use a fixed development key in `manifest.json` for stable ID while building the bridge.
+
+### Sprint 2 Success Checklist
+
+| Problem | Solution |
+|---|---|
+| Worker death | Use `connectNative` with long-lived port |
+| Debug logs corrupt protocol | Route logs to stderr/file, never stdout |
+| Header parsing mismatch | Use consistent 4-byte little-endian framing |
+| Path errors on Windows | Generate JSON manifests with escaped paths |
