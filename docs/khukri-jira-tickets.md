@@ -244,13 +244,16 @@ Create a Python or Rust script to simulate a browser. It sends 4-byte-prefixed J
 **Labels:** `extension`, `media-detection`, `hls`, `dash`
 
 **Description:**  
-Inject a content script that monitors network requests on video platforms for `.m3u8` (HLS) and `.mpd` (DASH) manifest URLs.
+Implement a hybrid sniffing flow for MV3: observe stream-related network patterns in the extension, then delegate extraction/parsing to the Native Messaging bridge and yt-dlp.
+
+The extension should treat stream detection as intercept + delegate, not full in-browser parsing. For YouTube-like platforms, send page URL plus session context through the bridge and let yt-dlp resolve playable formats.
 
 **Acceptance Criteria:**
-- [ ] Content script uses `chrome.devtools`-free approach (observe `<video>` `src` and XHR/fetch patterns)
-- [ ] Detected manifest URL and page origin are sent to service worker via `chrome.runtime.sendMessage`
-- [ ] Works on YouTube (DASH manifests) in manual testing
-- [ ] Does not fire on pages with no video element
+- [ ] Service worker observes target network patterns (`.m3u8`, `.mpd`, `videoplayback`) using MV3-supported listeners (non-blocking)
+- [ ] Detection event forwards page URL and source context to KHU-203 bridge instead of parsing manifests fully in extension code
+- [ ] For supported sites, bridge hand-off includes session context required for extraction (for example Cookies/User-Agent/Referer via `CustomHeaders`)
+- [ ] Extension path avoids stdout protocol corruption risks by delegating all native logging to stderr/file policy (validated in end-to-end test)
+- [ ] Works on YouTube flows where `<video src>` is a `blob:` URL (manual QA)
 
 ---
 
