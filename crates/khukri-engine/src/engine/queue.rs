@@ -9,6 +9,27 @@ use tracing::{error, info};
 use crate::config::DownloadConfig;
 use crate::engine::download::start_download;
 
+// ── ActiveGuard ───────────────────────────────────────────────────────────────
+
+/// RAII guard: decrements `active_count` and wakes the scheduler on drop.
+/// Ensures the slot is freed even if the download task panics.
+struct ActiveGuard {
+    inner: Arc<Mutex<QueueInner>>,
+    notify: Arc<Notify>,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        let inner = self.inner.clone();
+        let notify = self.notify.clone();
+        // `drop` is sync; spawn a task to do the async lock.
+        tokio::spawn(async move {
+            inner.lock().await.active_count -= 1;
+            notify.notify_one();
+        });
+    }
+}
+
 // ── PendingEntry ──────────────────────────────────────────────────────────────
 
 /// Wraps a config so BinaryHeap orders by Priority (max-heap → High pops first).
@@ -139,12 +160,12 @@ impl DownloadQueue {
 
             tokio::spawn(async move {
                 info!(url = %url, "Download started");
+                // Decrement active_count via a drop guard so it runs even on panic.
+                let _guard = ActiveGuard { inner: inner.clone(), notify: notify.clone() };
                 match start_download(entry.config, pool).await {
                     Ok(()) => info!(url = %url, "Download complete"),
                     Err(e) => error!(url = %url, error = %e, "Download failed"),
                 }
-                inner.lock().await.active_count -= 1;
-                notify.notify_one(); // wake scheduler — a slot just opened
             });
         }
     }

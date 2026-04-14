@@ -25,21 +25,31 @@ impl TokenBucket {
     }
 
     /// Consume `bytes` tokens, sleeping if the bucket is empty.
+    ///
+    /// Processes in slices ≤ `bytes_per_sec` so that chunks larger than the
+    /// burst cap are correctly throttled across multiple sleep cycles.
     pub async fn consume(&mut self, bytes: u64) {
         if self.bytes_per_sec == 0 {
             return; // unlimited
         }
-        self.refill();
+        let cap = self.bytes_per_sec;
+        let mut remaining = bytes;
 
-        let bytes_f = bytes as f64;
-        if self.tokens < bytes_f {
-            let deficit = bytes_f - self.tokens;
-            let wait_secs = deficit / self.bytes_per_sec as f64;
-            sleep(Duration::from_secs_f64(wait_secs)).await;
+        while remaining > 0 {
+            let slice = remaining.min(cap); // never request more than 1s of burst
             self.refill();
-        }
 
-        self.tokens = (self.tokens - bytes_f).max(0.0);
+            let slice_f = slice as f64;
+            if self.tokens < slice_f {
+                let deficit = slice_f - self.tokens;
+                let wait_secs = deficit / cap as f64;
+                sleep(Duration::from_secs_f64(wait_secs)).await;
+                self.refill();
+            }
+
+            self.tokens = (self.tokens - slice_f).max(0.0);
+            remaining -= slice;
+        }
     }
 
     fn refill(&mut self) {

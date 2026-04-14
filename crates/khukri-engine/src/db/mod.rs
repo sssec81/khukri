@@ -81,6 +81,8 @@ pub async fn insert_segments(
     download_id: &str,
     segments: &[(u64, u64)], // (start_byte, end_byte)
 ) -> Result<()> {
+    // All-or-nothing: a crash mid-loop must not leave partial segment state.
+    let mut tx = pool.begin().await?;
     for (start, end) in segments {
         sqlx::query(
             "INSERT INTO segments (download_id, start_byte, end_byte, completed)
@@ -89,9 +91,10 @@ pub async fn insert_segments(
         .bind(download_id)
         .bind(*start as i64)
         .bind(*end as i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     }
+    tx.commit().await?;
     Ok(())
 }
 

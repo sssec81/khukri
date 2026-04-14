@@ -16,7 +16,9 @@ pub fn is_permanent_failure(status: u16) -> bool {
 /// Compute back-off delay with ±10% jitter.
 /// delay = base_delay_ms * 2^attempt  ±10%
 fn backoff_delay(base_ms: u64, attempt: u8) -> Duration {
-    let base = base_ms.saturating_mul(1u64 << attempt);
+    // Cap the shift at 62 to prevent overflow; saturating_mul guards the multiply.
+    let shift = attempt.min(62) as u32;
+    let base = base_ms.saturating_mul(1u64 << shift);
     let jitter_range = (base / 10).max(1);
     let jitter = rand::thread_rng().gen_range(0..=jitter_range);
     let sign: i64 = if rand::thread_rng().gen_bool(0.5) { 1 } else { -1 };

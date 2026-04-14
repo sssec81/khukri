@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::config::DownloadConfig;
@@ -26,17 +26,25 @@ pub async fn start_download(config: DownloadConfig, pool: SqlitePool) -> Result<
     let download_id = Uuid::new_v4().to_string();
 
     // ── 1. HEAD: probe Content-Length + Accept-Ranges (with retry) ──────────
+    // Status check is inside the closure so 5xx triggers a retry,
+    // while permanent errors (403, 404) surface immediately.
     let head = with_retry(&config.retry, || {
         let client = client.clone();
         let url = config.url.clone();
-        async move { client.head(&url).send().await.map_err(KhukriError::Http) }
+        async move {
+            let resp = client.head(&url).send().await.map_err(KhukriError::Http)?;
+            let s = resp.status().as_u16();
+            if is_permanent_failure(s) {
+                return Err(KhukriError::PermanentError { status: s, url });
+            }
+            if s >= 500 {
+                // Transient server error — retryable.
+                return Err(KhukriError::Http(resp.error_for_status().unwrap_err()));
+            }
+            Ok(resp)
+        }
     })
     .await?;
-
-    let status = head.status().as_u16();
-    if is_permanent_failure(status) {
-        return Err(KhukriError::PermanentError { status, url: config.url.clone() });
-    }
 
     let total_bytes = head
         .headers()
@@ -78,12 +86,12 @@ pub async fn start_download(config: DownloadConfig, pool: SqlitePool) -> Result<
 
     db::set_download_status(&pool, &download_id, "active").await?;
 
-    // ── 3. Prepare output file ────────────────────────────────────────────────
+    // ── 3. Prepare output directory ───────────────────────────────────────────
     if let Some(parent) = config.file_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // ── 4. Route: segmented (known size + range support) vs streaming ─────────
+    // ── 4. Route: segmented vs streaming ─────────────────────────────────────
     let bucket: Option<Bucket> = config
         .throttle
         .bytes_per_sec
@@ -95,12 +103,10 @@ pub async fn start_download(config: DownloadConfig, pool: SqlitePool) -> Result<
             segmented_download(&config, &pool, &client, &download_id, size, bucket).await?;
         }
         Some(size) => {
-            // Known size but no range support — single-thread, still pre-allocate.
             warn!("Server does not support range requests — single-thread fallback");
             streaming_download(&config, &client, &download_id, &pool, Some(size), bucket).await?;
         }
         None => {
-            // Unknown size (chunked / dynamic) — streaming, no pre-allocation.
             warn!("No Content-Length — streaming download (no segmenting or resume)");
             streaming_download(&config, &client, &download_id, &pool, None, bucket).await?;
         }
@@ -128,17 +134,19 @@ async fn segmented_download(
     info!(thread_count, total_bytes, "Segmented download");
 
     let segments = build_segments(total_bytes, thread_count);
-    let seg_pairs: Vec<(u64, u64)> = segments.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+    let seg_pairs: Vec<(u64, u64)> =
+        segments.iter().map(|s| (s.start_byte, s.end_byte)).collect();
     db::insert_segments(pool, download_id, &seg_pairs).await?;
 
-    // Pre-allocate full file space before any writes.
     let file = OpenOptions::new()
-        .write(true).create(true).truncate(true)
-        .open(&config.file_path).await?;
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&config.file_path)
+        .await?;
     preallocate(&file, total_bytes).await?;
     drop(file);
 
-    // Resume: only fetch segments not yet completed.
     let incomplete = db::get_incomplete_segments(pool, download_id).await?;
     info!("{}/{} segment(s) remaining", incomplete.len(), segments.len());
 
@@ -167,8 +175,14 @@ async fn segmented_download(
             .await;
 
             match result {
-                Ok(()) => { db::mark_segment_complete(&pool, seg_id).await?; Ok::<(), KhukriError>(()) }
-                Err(e) => { error!("Segment [{start}-{end}] failed: {e}"); Err(e) }
+                Ok(()) => {
+                    db::mark_segment_complete(&pool, seg_id).await?;
+                    Ok::<(), KhukriError>(())
+                }
+                Err(e) => {
+                    error!("Segment [{start}-{end}] failed: {e}");
+                    Err(e)
+                }
             }
         }));
     }
@@ -177,20 +191,28 @@ async fn segmented_download(
     for handle in handles {
         match handle.await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => { error!("Segment error: {e}"); failed = true; }
-            Err(e) => { error!("Segment task panicked: {e}"); failed = true; }
+            Ok(Err(e)) => {
+                error!("Segment error: {e}");
+                failed = true;
+            }
+            Err(e) => {
+                error!("Segment task panicked: {e}");
+                failed = true;
+            }
         }
     }
 
     if failed {
         db::set_download_status(pool, download_id, "failed").await?;
-        return Err(KhukriError::MaxRetriesExceeded { attempts: config.retry.max_retries });
+        return Err(KhukriError::MaxRetriesExceeded {
+            attempts: config.retry.max_retries,
+        });
     }
 
     Ok(())
 }
 
-// ── Streaming path (no Content-Length or no range support) ───────────────────
+// ── Streaming path ────────────────────────────────────────────────────────────
 
 async fn streaming_download(
     config: &DownloadConfig,
@@ -200,24 +222,30 @@ async fn streaming_download(
     known_size: Option<u64>,
     bucket: Option<Bucket>,
 ) -> Result<()> {
+    // Status check is inside the closure so 5xx is retried.
     let response = with_retry(&config.retry, || {
         let client = client.clone();
         let url = config.url.clone();
-        async move { client.get(&url).send().await.map_err(KhukriError::Http) }
+        async move {
+            let resp = client.get(&url).send().await.map_err(KhukriError::Http)?;
+            let s = resp.status().as_u16();
+            if is_permanent_failure(s) {
+                return Err(KhukriError::PermanentError { status: s, url });
+            }
+            if s >= 500 {
+                return Err(KhukriError::Http(resp.error_for_status().unwrap_err()));
+            }
+            Ok(resp)
+        }
     })
     .await?;
 
-    let status = response.status().as_u16();
-    if is_permanent_failure(status) {
-        return Err(KhukriError::PermanentError { status, url: config.url.clone() });
-    }
-    if !response.status().is_success() {
-        return Err(KhukriError::Http(response.error_for_status().unwrap_err()));
-    }
-
     let mut file = OpenOptions::new()
-        .write(true).create(true).truncate(true)
-        .open(&config.file_path).await?;
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&config.file_path)
+        .await?;
 
     if let Some(size) = known_size {
         preallocate(&file, size).await?;
@@ -237,7 +265,6 @@ async fn streaming_download(
 
     file.flush().await?;
 
-    // Mark a synthetic single segment complete for DB consistency.
     db::insert_segments(pool, download_id, &[(0, written.saturating_sub(1))]).await?;
     let segs = db::get_incomplete_segments(pool, download_id).await?;
     if let Some(seg) = segs.first() {
@@ -265,14 +292,21 @@ async fn fetch_segment(
         .await?;
 
     let status = response.status().as_u16();
+
     if is_permanent_failure(status) {
         return Err(KhukriError::PermanentError { status, url: url.to_string() });
     }
-    // Range requests must return 206 Partial Content.
-    // A 200 means the server ignored our Range header and sent the full file —
-    // writing it at `start` offset would corrupt the output.
+
+    // Must be 206 Partial Content. A 200 means the server ignored our Range
+    // header and returned the full file — writing at `start` would corrupt output.
     if status != 206 {
-        return Err(KhukriError::Http(response.error_for_status().unwrap_err()));
+        return Err(if status >= 400 {
+            // 4xx/5xx not already caught above — retryable or specific error.
+            KhukriError::Http(response.error_for_status().unwrap_err())
+        } else {
+            // 1xx / 2xx (not 206) / 3xx — server doesn't honour Range.
+            KhukriError::NoRangeSupport
+        });
     }
 
     let mut file = OpenOptions::new().write(true).open(file_path).await?;
