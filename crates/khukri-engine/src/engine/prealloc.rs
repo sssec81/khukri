@@ -19,7 +19,16 @@ pub async fn preallocate(file: &File, size: u64) -> Result<()> {
     #[cfg(target_os = "linux")]
     linux_fallocate(file, size).await?;
 
+    // TODO: implement fcntl(F_PREALLOCATE) via spawn_blocking for better macOS parity.
+    #[cfg(target_os = "macos")]
+    macos_preallocate_stub(size);
+
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_preallocate_stub(size: u64) {
+    tracing::debug!(bytes = size, "macOS preallocation fallback currently uses set_len");
 }
 
 /// Use fallocate(2) to physically reserve disk blocks on Linux.

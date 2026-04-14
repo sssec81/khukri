@@ -68,6 +68,7 @@ fn cfg(url: impl Into<String>, out: impl Into<std::path::PathBuf>) -> DownloadCo
     DownloadConfig {
         url: url.into(),
         file_path: out.into(),
+        allowed_root: None,
         override_threads: Some(4),
         retry: RetryConfig { max_retries: 3, base_delay_ms: 1 },
         priority: Priority::Normal,

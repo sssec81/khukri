@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fs;
 use std::path::PathBuf;
 
 use crate::error::{KhukriError, Result};
@@ -81,6 +82,7 @@ impl Default for RetryConfig {
 pub struct DownloadConfig {
     pub url: String,
     pub file_path: PathBuf,
+    pub allowed_root: Option<PathBuf>,
     /// Override the auto-calculated thread count. None = use formula.
     pub override_threads: Option<u8>,
     pub retry: RetryConfig,
@@ -93,6 +95,7 @@ impl DownloadConfig {
         Self {
             url: url.into(),
             file_path: file_path.into(),
+            allowed_root: None,
             override_threads: None,
             retry: RetryConfig::default(),
             priority: Priority::default(),
@@ -113,6 +116,51 @@ impl DownloadConfig {
                 field: "file_path",
                 reason: "output path must not be empty".to_string(),
             });
+        }
+
+        if let Some(root) = &self.allowed_root {
+            let canonical_root = fs::canonicalize(root).map_err(|e| KhukriError::InvalidConfig {
+                field: "allowed_root",
+                reason: format!("cannot canonicalize allowed root: {e}"),
+            })?;
+
+            let target_base = if self.file_path.exists() {
+                self.file_path.clone()
+            } else {
+                self.file_path
+                    .parent()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| KhukriError::InvalidConfig {
+                        field: "file_path",
+                        reason: "output path must have a parent directory".to_string(),
+                    })?
+            };
+
+            let canonical_target_base = fs::canonicalize(&target_base).map_err(|e| {
+                KhukriError::InvalidConfig {
+                    field: "file_path",
+                    reason: format!("cannot canonicalize output base path: {e}"),
+                }
+            })?;
+
+            let canonical_target = if self.file_path.exists() {
+                canonical_target_base
+            } else if let Some(name) = self.file_path.file_name() {
+                canonical_target_base.join(name)
+            } else {
+                canonical_target_base
+            };
+
+            if !canonical_target.starts_with(&canonical_root) {
+                return Err(KhukriError::InvalidConfig {
+                    field: "file_path",
+                    reason: format!(
+                        "path '{}' is outside allowed root '{}'",
+                        canonical_target.display(),
+                        canonical_root.display()
+                    ),
+                });
+            }
         }
 
         if let Some(threads) = self.override_threads {
@@ -150,5 +198,35 @@ mod tests {
     fn test_validate_accepts_reasonable_config() {
         let cfg = DownloadConfig::new("https://example.com/file.bin", "out.bin");
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_path_outside_allowed_root() {
+        let stamp = format!(
+            "khukri_cfg_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(format!("{stamp}_root"));
+        let outside = std::env::temp_dir().join(format!("{stamp}_outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let mut cfg = DownloadConfig::new("https://example.com/file.bin", outside.join("x.bin"));
+        cfg.allowed_root = Some(root.clone());
+
+        let result = cfg.validate();
+        assert!(matches!(
+            result,
+            Err(KhukriError::InvalidConfig {
+                field: "file_path",
+                ..
+            })
+        ));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
     }
 }

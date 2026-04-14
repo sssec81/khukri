@@ -57,6 +57,14 @@ impl DownloadHandle {
         &self.id
     }
 
+    /// Cancels this download gracefully (user-initiated pause).
+    ///
+    /// - Triggers the internal `CancellationToken` so active segment/stream tasks stop safely.
+    /// - The final persisted state becomes `paused` and progress remains resumable.
+    /// - Progress subscribers receive a terminal `DownloadStatus::Paused` update.
+    ///
+    /// This differs from internal fail-fast aborts (`KhukriError::Aborted`), which are treated
+    /// as download failures and persisted as `failed`.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }

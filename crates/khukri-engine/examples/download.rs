@@ -71,6 +71,7 @@ async fn main() {
     let config = DownloadConfig {
         url: url.clone(),
         file_path: output.clone(),
+        allowed_root: None,
         override_threads: None,
         retry: RetryConfig::default(),
         priority: Priority::Normal,

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::config::RetryConfig;
 use crate::error::{KhukriError, Result};
@@ -54,6 +54,13 @@ where
                     return Err(KhukriError::MaxRetriesExceeded { attempts: attempt });
                 }
                 let delay = backoff_delay(config.base_delay_ms, attempt);
+                #[cfg(debug_assertions)]
+                debug!(
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis(),
+                    error = ?e,
+                    "retry attempt failed"
+                );
                 warn!(
                     "Attempt {} failed ({}), retrying in {}ms",
                     attempt + 1,
