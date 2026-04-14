@@ -54,7 +54,8 @@ khukri/
 │   └── en.json            # All UI strings
 └── docs/
     ├── khukri-prd.md      # Product requirements (LOCKED v1.1)
-    └── khukri-jira-tickets.md
+    ├── khukri-jira-tickets.md
+    └── integration-hardening.md  # Sprint 2/3 integration risks and mitigations
 ```
 
 ---
@@ -138,6 +139,7 @@ cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.b
 ## Notes
 
 - `Cargo.lock` is excluded from git (correct for a library crate). When the Tauri binary is added in Sprint 3, `Cargo.lock` will be committed since application binaries should lock their dependencies.
+- Integration risk register and mitigation checklist are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
 
 ---
 
