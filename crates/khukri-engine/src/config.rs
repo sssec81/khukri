@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::PathBuf;
 
+use reqwest::header::{HeaderName, HeaderValue};
+
 use crate::error::{KhukriError, Result};
 
 // ── Priority ──────────────────────────────────────────────────────────────────
@@ -83,6 +85,7 @@ pub struct DownloadConfig {
     pub retry: RetryConfig,
     pub priority: Priority,
     pub throttle: ThrottleConfig,
+    pub custom_headers: Vec<(String, String)>,
 }
 
 impl DownloadConfig {
@@ -95,6 +98,7 @@ impl DownloadConfig {
             retry: RetryConfig::default(),
             priority: Priority::default(),
             throttle: ThrottleConfig::default(),
+            custom_headers: Vec::new(),
         }
     }
 
@@ -164,6 +168,17 @@ impl DownloadConfig {
                     reason: "must be in range 1..=128".to_string(),
                 });
             }
+        }
+
+        for (name, value) in &self.custom_headers {
+            HeaderName::from_bytes(name.as_bytes()).map_err(|e| KhukriError::InvalidConfig {
+                field: "custom_headers",
+                reason: format!("invalid header name '{name}': {e}"),
+            })?;
+            HeaderValue::from_str(value).map_err(|e| KhukriError::InvalidConfig {
+                field: "custom_headers",
+                reason: format!("invalid header value for '{name}': {e}"),
+            })?;
         }
 
         Ok(())

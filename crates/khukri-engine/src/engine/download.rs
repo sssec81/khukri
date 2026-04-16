@@ -4,6 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use reqwest::Client;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sqlx::SqlitePool;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -23,6 +24,24 @@ use crate::error::{KhukriError, Result};
 
 type Bucket = Arc<Mutex<TokenBucket>>;
 const STREAM_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn build_header_map(custom_headers: &[(String, String)]) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    for (name, value) in custom_headers {
+        let header_name =
+            HeaderName::from_bytes(name.as_bytes()).map_err(|e| KhukriError::InvalidConfig {
+                field: "custom_headers",
+                reason: format!("invalid header name '{name}': {e}"),
+            })?;
+        let header_value =
+            HeaderValue::from_str(value).map_err(|e| KhukriError::InvalidConfig {
+                field: "custom_headers",
+                reason: format!("invalid header value for '{name}': {e}"),
+            })?;
+        headers.insert(header_name, header_value);
+    }
+    Ok(headers)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadStatus {
@@ -208,6 +227,7 @@ async fn start_download_internal(
     progress_tx: Option<watch::Sender<DownloadProgress>>,
 ) -> Result<()> {
     config.validate()?;
+    let custom_headers = Arc::new(build_header_map(&config.custom_headers)?);
     let client = Arc::new(
         Client::builder()
             .connect_timeout(Duration::from_secs(15))
@@ -236,9 +256,15 @@ async fn start_download_internal(
     // while permanent errors (403, 404) surface immediately.
     let head = with_retry(&config.retry, || {
         let client = client.clone();
+        let custom_headers = custom_headers.clone();
         let url = config.url.clone();
         async move {
-            let resp = client.head(&url).send().await.map_err(KhukriError::Http)?;
+            let resp = client
+                .head(&url)
+                .headers(custom_headers.as_ref().clone())
+                .send()
+                .await
+                .map_err(KhukriError::Http)?;
             let s = resp.status().as_u16();
             if is_permanent_failure(s) {
                 return Err(KhukriError::PermanentError { status: s, url });
@@ -319,6 +345,7 @@ async fn start_download_internal(
                 bucket,
                 &cancel,
                 progress.clone(),
+                custom_headers.clone(),
             )
             .await
         }
@@ -333,6 +360,7 @@ async fn start_download_internal(
                 bucket,
                 &cancel,
                 progress.clone(),
+                custom_headers.clone(),
             )
             .await
         }
@@ -347,6 +375,7 @@ async fn start_download_internal(
                 bucket,
                 &cancel,
                 progress.clone(),
+                custom_headers.clone(),
             )
             .await
         }
@@ -391,6 +420,7 @@ async fn segmented_download(
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
     progress: Option<ProgressState>,
+    custom_headers: Arc<HeaderMap>,
 ) -> Result<()> {
     let thread_count = resolved_thread_count(total_bytes, config.override_threads);
 
@@ -453,6 +483,7 @@ async fn segmented_download(
         let cancel = cancel.clone();
         let fail_fast = fail_fast.clone();
         let progress = progress.clone();
+        let custom_headers = custom_headers.clone();
 
         handles.push(tokio::spawn(async move {
             let seg_id = seg_row.id;
@@ -474,6 +505,7 @@ async fn segmented_download(
                 let cancel = cancel.clone();
                 let fail_fast = fail_fast.clone();
                 let progress = progress.clone();
+                let custom_headers = custom_headers.clone();
                 async move {
                     if cancel.is_cancelled() {
                         return Err(KhukriError::Cancelled);
@@ -491,6 +523,7 @@ async fn segmented_download(
                         &cancel,
                         &fail_fast,
                         progress.clone(),
+                        custom_headers.clone(),
                     )
                     .await
                 }
@@ -566,6 +599,7 @@ async fn streaming_download(
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
     progress: Option<ProgressState>,
+    custom_headers: Arc<HeaderMap>,
 ) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(KhukriError::Cancelled);
@@ -574,13 +608,19 @@ async fn streaming_download(
     // Status check is inside the closure so 5xx is retried.
     let response = with_retry(&config.retry, || {
         let client = client.clone();
+        let custom_headers = custom_headers.clone();
         let url = config.url.clone();
         let cancel = cancel.clone();
         async move {
             if cancel.is_cancelled() {
                 return Err(KhukriError::Cancelled);
             }
-            let resp = client.get(&url).send().await.map_err(KhukriError::Http)?;
+            let resp = client
+                .get(&url)
+                .headers(custom_headers.as_ref().clone())
+                .send()
+                .await
+                .map_err(KhukriError::Http)?;
             let s = resp.status().as_u16();
             if is_permanent_failure(s) {
                 return Err(KhukriError::PermanentError { status: s, url });
@@ -670,6 +710,7 @@ async fn fetch_segment(
     cancel: &CancellationToken,
     fail_fast: &CancellationToken,
     progress: Option<ProgressState>,
+    custom_headers: Arc<HeaderMap>,
 ) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(KhukriError::Cancelled);
@@ -680,6 +721,7 @@ async fn fetch_segment(
 
     let response = client
         .get(url)
+        .headers(custom_headers.as_ref().clone())
         .header("Range", format!("bytes={start}-{end}"))
         .send()
         .await?;

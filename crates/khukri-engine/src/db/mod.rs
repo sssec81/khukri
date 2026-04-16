@@ -1,9 +1,14 @@
 use crate::error::Result;
+use sqlx::migrate::Migrator;
+use sqlx::sqlite::SqliteRow;
+use sqlx::Row;
 use sqlx::SqlitePool;
+
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct DownloadRow {
     pub id: String,
     pub url: String,
@@ -14,7 +19,21 @@ pub struct DownloadRow {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+impl<'r> sqlx::FromRow<'r, SqliteRow> for DownloadRow {
+    fn from_row(row: &'r SqliteRow) -> std::result::Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            url: row.try_get("url")?,
+            file_path: row.try_get("file_path")?,
+            total_bytes: row.try_get("total_bytes")?,
+            status: row.try_get("status")?,
+            priority: row.try_get("priority")?,
+            created_at: row.try_get("created_at")?,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SegmentRow {
     pub id: i64,
     pub download_id: String,
@@ -23,10 +42,22 @@ pub struct SegmentRow {
     pub completed: i64, // 0 | 1
 }
 
+impl<'r> sqlx::FromRow<'r, SqliteRow> for SegmentRow {
+    fn from_row(row: &'r SqliteRow) -> std::result::Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            download_id: row.try_get("download_id")?,
+            start_byte: row.try_get("start_byte")?,
+            end_byte: row.try_get("end_byte")?,
+            completed: row.try_get("completed")?,
+        })
+    }
+}
+
 // ── Migrations ────────────────────────────────────────────────────────────────
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
-    sqlx::migrate!("./migrations").run(pool).await?;
+    MIGRATOR.run(pool).await?;
     Ok(())
 }
 

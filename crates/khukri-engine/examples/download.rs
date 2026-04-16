@@ -79,6 +79,7 @@ async fn main() {
         throttle: ThrottleConfig {
             bytes_per_sec: speed_limit,
         },
+        custom_headers: Vec::new(),
     };
 
     println!("Downloading: {url}");

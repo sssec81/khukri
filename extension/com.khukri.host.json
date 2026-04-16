@@ -1,0 +1,9 @@
+{
+    "name": "com.khukri.host",
+    "description": "Khukri Native Messaging Host",
+    "path": "/mnt/c/Users/Geruwa/Desktop/khukri/target/release/khukri-bridge",
+    "type": "stdio",
+    "allowed_origins": [
+        "chrome-extension://*"
+    ]
+}

@@ -1,3 +1,8 @@
+
 [workspace]
-members = ["crates/khukri-engine"]
+members = ["crates/khukri-engine", "crates/khukri-bridge"]
 resolver = "2"
+
+[workspace.dependencies]
+# Define it here once, correctly, so all members inherit the "safe" version
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }

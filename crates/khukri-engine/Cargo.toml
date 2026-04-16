@@ -4,14 +4,25 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Core Async Stack
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "http2", "rustls-tls"] }
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
+
+# Database - Optimized for SQLite and Security
+# Disabling default-features removes the vulnerable 'rsa' crate used by MySQL
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", 
+    "sqlite", 
+    "migrate", 
+    "macros"
+] }
+
+# Utilities
 thiserror = "1"
 tracing = "0.1"
 futures = "0.3"
-rand = "0.8"
+rand = "0.9"
 uuid = { version = "1", features = ["v4", "v5"] }
 
 [target.'cfg(unix)'.dependencies]
