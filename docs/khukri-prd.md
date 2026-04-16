@@ -77,7 +77,7 @@
 
 - **Media Detection:** Detect `.m3u8` (HLS) and `.mpd` (DASH) stream manifests on video platforms via content-script URL pattern matching.
 
-- **Floating Blade UI:** A subtle, non-intrusive pill overlay appears in the bottom-right corner of detected video players after 1.5 s of playback. Single click queues the best available quality. Dismissible; remembers dismissal per-site.
+- **Floating Blade UI:** A subtle, non-intrusive pill overlay appears near the active video player after 1.5 s of playback. Single click queues the best available quality. Dismissible per-site during a session, with development-time reset on extension install/startup to keep manual QA repeatable.
 
 - **Browser Support:**
   - **Chromium (MV3):** Full support — Chrome, Edge, Brave, Opera GX.
@@ -129,7 +129,7 @@
 | # | Metric | Target | How Measured |
 |---|---|---|---|
 | 1 | RAM during active downloads | ≤ 80 MB (engine + UI, excluding yt-dlp sidecars) | `heaptrack` / Windows Task Manager |
-| 2 | Zero-configuration setup | Browser bridge auto-configured on install | Manual QA: fresh install → first intercept |
+| 2 | Zero-configuration setup | Browser bridge auto-configured on install after packaged extension-ID wiring is finalized | Manual QA: fresh install → first intercept |
 | 3 | Download speed vs. IDM | Match or exceed on same connection | Parallel benchmark, same 1 GB file |
 | 4 | Cold-start time (Windows) | ≤ 800 ms to interactive UI | `time` from process spawn to first paint |
 | 5 | Time-to-first-segment | ≤ 500 ms from user initiating a download | Instrumented log timestamps |
@@ -175,12 +175,12 @@
 
 **Deliverables:**
 - MV3 extension (Chrome/Edge) with `chrome.downloads` interceptor
-- Native Messaging host registered by installer
-- Named Pipe / UDS bridge in Rust
+- Native Messaging host registration flow in Rust
+- Native Messaging bridge in Rust
 - Content-script HLS/DASH detector
 - Floating Blade UI pill
 
-**Definition of Done:** On a fresh Windows and Linux install, clicking a file in Chrome triggers a download in the engine with no manual configuration. Blade UI appears on YouTube after 1.5 s.
+**Definition of Done:** On Windows and Linux development setups, clicking a file in Chrome triggers a download in the engine through the bridge, and the Blade UI appears on YouTube after 1.5 s. Final zero-config install behavior remains deferred until stable packaged extension-ID / `allowed_origins` wiring is completed.
 
 ---
 

@@ -205,6 +205,7 @@ Add a `--register` (or `--repair`) flag to the Rust bridge binary that automatic
 - [ ] Linux: Auto-write JSON to `~/.config/google-chrome/NativeMessagingHosts/`.
 - [ ] Path detection: Binary must find its own absolute path for the manifest `path` field.
 - [ ] Re-running the registration command repairs moved installs by rewriting the absolute path.
+- [ ] Stable packaged extension-ID / exact `allowed_origins` wiring may remain deferred until packaging/distribution work, but Sprint 2 docs must call that out explicitly.
 
 ---
 
@@ -267,14 +268,14 @@ The extension should treat stream detection as intercept + delegate, not full in
 **Labels:** `extension`, `ui`, `blade`
 
 **Description:**  
-Inject a subtle pill-shaped overlay in the bottom-right of detected video players. Appears after 1.5s of playback. Single click queues the highest quality stream. Dismissible per-site (stored in `chrome.storage.local`).
+Inject a subtle pill-shaped overlay near the active video player. Appears after 1.5s of playback. Single click queues the highest quality stream. Dismissible per-site via `chrome.storage.local`, with development-time reset on extension install/startup to keep manual QA repeatable.
 
 **Acceptance Criteria:**
 - [ ] Pill uses Khukri brand colors: Gurkha Green `#2D5A27`, Tiger Amber `#FF9F1C`
 - [ ] Appears after exactly 1.5s delay (use `setTimeout`, reset on page unload)
-- [ ] "×" dismiss button sets `dismissed_sites: [origin]` in storage; pill never shows again on that origin
+- [ ] "×" dismiss button sets `dismissed_sites: [origin]` in storage for the current session; development docs note that install/startup resets this state during Sprint 2 QA
 - [ ] Clicking pill sends `{ type: "queue_download", source: "blade" }` to service worker
-- [ ] Does not shift page layout (positioned `fixed`, `z-index: 2147483647`)
+- [ ] Does not shift page layout and remains visually attached to the active player with `z-index: 2147483647`
 
 ---
 
