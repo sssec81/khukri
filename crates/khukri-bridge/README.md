@@ -18,6 +18,7 @@ Implements the Chrome Native Messaging protocol for Khukri (KHU-203).
 - Engine handoff is implemented and covered by the native protocol integration test
 - Custom browser headers from the extension are forwarded into `khukri-engine`
 - Registration writes a host manifest with the bridge's absolute path
+- Manual QA is currently easiest with Linux Chrome/WSL or a Windows Rust toolchain that can produce `khukri-bridge.exe`
 - Known deferred item: stable extension-ID / exact `allowed_origins` wiring still needs to be finalized before packaging
 
 ## Verification

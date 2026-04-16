@@ -1,4 +1,4 @@
-# 🗡️ Khukri
+# Khukri
 
 > Khukri exists because I wanted a downloader that does not phone home, does not eat RAM, and does not turn into a lag machine under parallel downloads.
 
@@ -8,11 +8,13 @@
 
 | Sprint | Deliverable | Status |
 |---|---|---|
-| 1 — The Steel | Download engine (segmenting, SQLite, retry, queue, throttle) | ✅ Complete |
-| 2 — The Sniffer | Browser extension + Native Messaging bridge | 🔜 |
-| 3 — The Handle | Tauri GUI | 🔜 |
-| 4 — The Scabbard | yt-dlp + FFmpeg integration | 🔜 |
-| 5 — Distribution | CI/CD, code signing, reproducible builds | 🔜 |
+| 1 - The Steel | Download engine (segmenting, SQLite, retry, queue, throttle) | Complete |
+| 2 - The Sniffer | Browser extension + Native Messaging bridge | Complete |
+| 3 - The Handle | Tauri GUI | Planned |
+| 4 - The Scabbard | yt-dlp + FFmpeg integration | Planned |
+| 5 - Distribution | CI/CD, code signing, reproducible builds | Planned |
+
+Sprint 2 is implemented and verified in the current `main` branch. See [docs/sprint-2-status.md](docs/sprint-2-status.md) for the ticket-by-ticket board.
 
 ---
 
@@ -20,7 +22,7 @@
 
 | Layer | Technology |
 |---|---|
-| Language | Rust (backend), TypeScript (extension + UI) |
+| Language | Rust (backend), JavaScript (extension) |
 | Framework | Tauri 2.0 |
 | Async | Tokio |
 | HTTP | Reqwest (rustls-tls, HTTP/2) |
@@ -35,7 +37,7 @@ Because this project is mostly systems work disguised as a downloader.
 
 - Parallel segment writes are easy to get wrong: one bad offset or shared mutable state bug can silently corrupt files.
 - NVMe can hide bad design for a while, then punish it at scale when concurrent writes and allocation churn kick in.
-- If you do not pre-allocate up front, the kernel/filesystem allocator keeps searching for free extents while segments are writing, which increases I/O jitter and can fragment write patterns under load.
+- If you do not pre-allocate up front, the filesystem allocator keeps searching for free extents while segments are writing, which increases I/O jitter and can fragment write patterns under load.
 - Rust gives strong guarantees around ownership and concurrency, so the engine can run many async tasks without data races while still keeping throughput high.
 
 Khukri leans into this: deterministic segment ranges, pre-allocation before writes, explicit retry/cancel paths, and SQLite-backed state so crashes do not destroy progress.
@@ -44,33 +46,21 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 
 ## Architecture
 
-```
+```text
 khukri/
-├── crates/
-│   └── khukri-engine/     # Core download engine (Rust library)
-│       ├── src/
-│       │   ├── engine/    # Segmenting, download, retry, throttle, queue
-│       │   ├── db/        # SQLite persistence
-│       │   ├── config.rs
-│       │   └── error.rs
-│       ├── migrations/    # sqlx migrations
-│       ├── tests/
-│       │   └── integration.rs  # Integration tests (local HTTP server)
-│       └── examples/
-│           └── download.rs     # CLI smoke-test
-├── src-tauri/             # Tauri backend (Sprint 3)
-├── src/                   # Frontend UI (Sprint 3)
-├── extension/             # MV3 Chrome extension (Sprint 2)
-├── sidecar/               # yt-dlp + FFmpeg binaries (Sprint 4)
-├── i18n/
-│   └── en.json            # All UI strings
-└── docs/
-    ├── adr/
-    │   └── 001-native-messaging-vs-websockets.md
-    │   └── 002-stream-watchdog-timeout-policy.md
-    ├── khukri-prd.md      # Product requirements (LOCKED v1.1)
-    ├── khukri-jira-tickets.md
-    └── integration-hardening.md  # Sprint 2/3 integration risks and mitigations
+|-- crates/
+|   |-- khukri-engine/     # Core download engine (Rust library)
+|   `-- khukri-bridge/     # Native Messaging bridge (Rust binary)
+|-- extension/             # MV3 Chrome extension (Sprint 2)
+|-- src-tauri/             # Tauri backend (Sprint 3)
+|-- src/                   # Frontend UI (Sprint 3)
+|-- sidecar/               # yt-dlp + FFmpeg binaries (Sprint 4)
+`-- docs/
+    |-- adr/
+    |-- khukri-prd.md
+    |-- khukri-jira-tickets.md
+    |-- integration-hardening.md
+    `-- sprint-2-status.md
 ```
 
 ---
@@ -79,82 +69,111 @@ khukri/
 
 ### Prerequisites
 
-- Rust 1.75+ (`rustup`)
-- WSL2 or Linux / macOS for development
+- Rust toolchain (`rustup`, `cargo`)
+- Linux, WSL2, or macOS for the current native-host development flow
+- Chrome or another Chromium browser for extension testing
 
 ### Build
 
 ```bash
-cargo build -p khukri-engine
+cargo build --workspace
 ```
 
 ### Test
 
-Runs 17 unit tests + 6 integration tests (local HTTP server, no network required):
+Current workspace verification:
+
+- `khukri-bridge`: 1 native protocol integration test
+- `khukri-engine`: 18 unit tests
+- `khukri-engine`: 6 integration tests
 
 ```bash
-cargo test -p khukri-engine
+cargo test --workspace
 ```
 
-### CLI smoke-test
+### Engine smoke test
 
 ```bash
 # Streaming download (no Content-Length)
-cargo run --example download -- "https://speed.cloudflare.com/__down?bytes=10485760" /tmp/test.bin
+cargo run -p khukri-engine --example download -- "https://speed.cloudflare.com/__down?bytes=10485760" /tmp/test.bin
 
 # Segmented download (parallel, with range support)
-cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.bin
-
-# With speed cap (500 KB/s)
-cargo run --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.bin 512000
+cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10Mb.dat /tmp/test.bin
 ```
+
+### Extension / bridge notes
+
+- Extension files live in [extension/README.md](extension/README.md)
+- Bridge details live in [crates/khukri-bridge/README.md](crates/khukri-bridge/README.md)
+- Stable packaged extension ID / final `allowed_origins` wiring is still deferred
 
 ---
 
-## Sprint 1 — The Steel
+## Sprint 1 - The Steel
 
-### What's implemented
+### Implemented
 
 | Module | Description |
 |---|---|
-| `engine/segment.rs` | Thread count formula: `clamp(floor(file_size_MB / 50), 4, 64)` |
-| `engine/download.rs` | Segmented parallel download + streaming fallback (no Content-Length), deterministic download IDs, cancellation-aware entrypoint |
-| `engine/download.rs` (API) | Public `spawn_download` + `DownloadHandle` progress watcher (`watch`) for bytes/speed/ETA/status |
-| `engine/retry.rs` | Exponential back-off with ±10% jitter; permanent errors (403, 404) never retried |
-| `engine/prealloc.rs` | `fallocate` (Linux) / `SetEndOfFile` (Windows) / `ftruncate` (macOS) before writes |
-| `engine/throttle.rs` | Token-bucket rate limiter; shared across segment tasks for accurate per-download cap |
-| `engine/queue.rs` | Priority queue (High / Normal / Low); `max_concurrent` hot-configurable at runtime |
-| `db/mod.rs` | SQLite persistence for download + segment state; transactional segment insert + idempotent upsert/reset helpers |
-| `config.rs` | Input validation for URL/path/thread override bounds before execution |
+| `engine/segment.rs` | Thread count formula: `clamp(floor(file_size_mb / 50), 4, 64)` |
+| `engine/download.rs` | Segmented parallel download plus streaming fallback, deterministic download IDs, cancellation-aware entrypoint |
+| `engine/download.rs` API | Public `spawn_download` plus `DownloadHandle` progress watcher |
+| `engine/retry.rs` | Exponential backoff with jitter; permanent errors (403, 404) are not retried |
+| `engine/prealloc.rs` | Platform-specific pre-allocation before writes |
+| `engine/throttle.rs` | Shared token-bucket rate limiter |
+| `engine/queue.rs` | Priority queue with hot-configurable concurrency |
+| `db/mod.rs` | SQLite persistence for download and segment state |
+| `config.rs` | Early validation for URL, path, threads, and custom headers |
 
 ### Test coverage
 
 | Type | Count | What |
 |---|---|---|
-| Unit | 17 | Thread count formula (including tiny/zero-byte edge cases), retry logic (2 failures → success, permanent error, abort, exhaustion), token bucket (no-sleep, deficit sleep, unlimited), priority ordering, config validation |
-| Integration | 6 | SHA-256 verified segmented download, streaming fallback, retry on transient 5xx, permanent 403 not retried, resume only re-fetches incomplete segments, spawned progress reporting |
+| Unit | 18 | Segment sizing, retry logic, throttle behavior, queue ordering, and config validation |
+| Integration | 6 | SHA-256 segmented download, streaming fallback, retry handling, permanent failure handling, resume behavior, and spawned progress reporting |
+
+---
+
+## Sprint 2 - The Sniffer
+
+### Implemented
+
+| Area | Description |
+|---|---|
+| `extension/manifest.json` | MV3 extension with download interception, storage, webRequest, and native messaging permissions |
+| `extension/service-worker.js` | Browser download interception, stream candidate tracking, and Native Messaging handoff |
+| `extension/content-script.js` | Blob/video fallback detection with page-context forwarding |
+| `extension/blade-ui.js` | IDM-style player-adjacent Blade pill with SPA reinjection |
+| `crates/khukri-bridge/src/main.rs` | Native Messaging framing, stderr-safe logging, engine handoff, and `--register` / `--repair` flows |
+| `crates/khukri-bridge/tests/native_protocol.rs` | End-to-end bridge protocol test against a local HTTP server |
+
+### Current notes
+
+- The service worker remembers the best stream candidate and queues on Blade click rather than auto-queuing every observed request.
+- Custom browser headers are forwarded from the extension into `khukri-engine`.
+- The current dev workflow resets Blade dismissal state on extension install/startup to make manual QA easier.
+- Full YouTube extractor-grade support is still future work for Sprint 4.
 
 ---
 
 ## Key Design Decisions
 
-- **Thread count:** `clamp(floor(file_size_MB / 50), 4, 64)` — one thread per 50 MB, bounded 4–64
-- **TLS:** rustls (pure Rust — no system OpenSSL dependency)
-- **Segment writes:** each task opens the file independently and seeks to its byte offset — no mutex on the file, no overlapping ranges
-- **Pause/resume:** deterministic download ID (URL + output path) with SQLite segment state; only incomplete segments are fetched on resume
-- **Throttling:** token bucket shared across all segment tasks; sliced to ≤ 1s of burst to handle large chunks correctly
-- **Pre-allocation:** reserves full disk space before any segment writes — prevents fragmentation and catches out-of-space early
-- **Queue slot safety:** RAII drop guard ensures `active_count` is always decremented even if a download task panics
-- **Cancellation:** cooperative cancellation support via `start_download_with_cancel(..., CancellationToken)` updates state to `paused`
-- **Progress API:** `spawn_download` returns `DownloadHandle` with a `watch` subscription for status, bytes done, speed, ETA, and segment counts
-- **Config safety:** invalid runtime config (empty URL/path, invalid thread override) is rejected early with explicit errors
+- Thread count: `clamp(floor(file_size_mb / 50), 4, 64)`
+- TLS: `rustls`
+- Segment writes: each task opens the file independently and seeks to its own offset
+- Pause/resume: deterministic download ID plus SQLite segment state
+- Throttling: token bucket shared across all segment tasks
+- Pre-allocation: reserve full disk space before writes begin
+- Cancellation: cooperative cancellation support through the engine entrypoints
+- Progress API: `spawn_download` returns a handle with watch-based updates
+- Config safety: invalid runtime config is rejected early with explicit errors
 
 ---
 
 ## Notes
 
-- `Cargo.lock` is excluded from git (correct for a library crate). When the Tauri binary is added in Sprint 3, `Cargo.lock` will be committed since application binaries should lock their dependencies.
-- Integration risk register and mitigation checklist are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
+- `Cargo.lock` remains excluded while the repo is still centered on library crates and in-progress application work.
+- Integration risks and mitigations are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
 
 ---
 
