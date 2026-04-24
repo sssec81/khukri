@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Khukri</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">K</div>
+        <h1 class="brand-wordmark">Khukri</h1>
+      </div>
+      <nav class="nav">
+        <button id="navDownloads" class="nav-item nav-item-active" type="button">
+          <span data-i18n="nav.downloads"></span>
+        </button>
+        <button id="navSettings" class="nav-item" type="button">
+          <span data-i18n="nav.settings"></span>
+        </button>
+      </nav>
+    </aside>
+
+    <main class="main">
+
+      <!-- Downloads view -->
+      <div class="view" data-view="downloads">
+        <header class="view-toolbar">
+          <h2 class="view-title" data-i18n="nav.downloads"></h2>
+          <p id="formStatus" class="view-status" aria-live="polite"></p>
+          <div class="toolbar-actions">
+            <button id="refreshQueue" class="ghost-btn" type="button" data-i18n="actions.refresh"></button>
+            <button id="newDownload" class="primary-button" type="button" data-i18n="actions.new_download"></button>
+          </div>
+        </header>
+
+        <div class="view-body">
+
+          <section id="downloadsComposer" class="composer" hidden>
+            <form id="downloadForm" class="download-form">
+              <div class="form-row">
+                <label class="field field-grow">
+                  <span data-i18n="composer.urlLabel"></span>
+                  <input id="downloadUrl" name="downloadUrl" type="url" placeholder="https://example.com/file.zip" required>
+                </label>
+                <label class="field field-grow">
+                  <span data-i18n="composer.outputLabel"></span>
+                  <input id="outputPath" name="outputPath" type="text">
+                </label>
+              </div>
+              <div class="form-row form-row-align-end">
+                <label class="field">
+                  <span data-i18n="composer.priorityLabel"></span>
+                  <select id="priority" name="priority">
+                    <option value="high" data-i18n="priority.high"></option>
+                    <option value="normal" selected data-i18n="priority.normal"></option>
+                    <option value="low" data-i18n="priority.low"></option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span data-i18n="composer.throttleLabel"></span>
+                  <input id="throttle" name="throttle" type="number" min="0" step="1" placeholder="0">
+                </label>
+                <div class="form-submit-cell">
+                  <button class="primary-button" type="submit" data-i18n="actions.start"></button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <section id="downloadsPanel" class="queue-panel">
+            <div id="emptyState" class="empty-state">
+              <p class="empty-title" data-i18n="downloads.emptyTitle"></p>
+              <p class="empty-hint" data-i18n="downloads.emptyCopy"></p>
+            </div>
+            <div id="downloadsList" class="downloads-list" hidden></div>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- Settings view -->
+      <div class="view view--settings" data-view="settings" hidden>
+        <header class="view-toolbar">
+          <h2 class="view-title" data-i18n="settings.title"></h2>
+          <div class="toolbar-actions">
+            <p id="settingsStatus" class="view-status view-status--inline" aria-live="polite"></p>
+            <button class="primary-button" form="settingsForm" type="submit" data-i18n="settings.save"></button>
+          </div>
+        </header>
+
+        <div class="view-body">
+          <form id="settingsForm" class="settings-grid">
+
+            <article class="settings-section">
+              <div class="settings-section-head">
+                <span class="section-label" data-i18n="settings.general.title"></span>
+                <button class="reset-link reset-section" type="button" data-section="general" data-i18n="settings.reset"></button>
+              </div>
+              <label class="field">
+                <span data-i18n="settings.general.pathLabel"></span>
+                <input id="settingsDefaultPath" name="generalDefaultPath" type="text">
+              </label>
+              <label class="field">
+                <span data-i18n="settings.general.concurrentLabel"></span>
+                <input id="settingsMaxConcurrent" name="generalMaxConcurrent" type="number" min="1" max="16" step="1">
+              </label>
+            </article>
+
+            <article class="settings-section">
+              <div class="settings-section-head">
+                <span class="section-label" data-i18n="settings.performance.title"></span>
+                <button class="reset-link reset-section" type="button" data-section="performance" data-i18n="settings.reset"></button>
+              </div>
+              <label class="field">
+                <span data-i18n="settings.performance.threadsLabel"></span>
+                <input id="settingsThreadOverride" name="performanceThreadOverride" type="number" min="1" max="128" step="1">
+              </label>
+              <label class="field">
+                <span data-i18n="settings.performance.bandwidthLabel"></span>
+                <input id="settingsBandwidthCap" name="performanceBandwidthCap" type="number" min="0" step="1">
+              </label>
+            </article>
+
+            <article class="settings-section">
+              <div class="settings-section-head">
+                <span class="section-label" data-i18n="settings.scheduler.title"></span>
+                <button class="reset-link reset-section" type="button" data-section="scheduler" data-i18n="settings.reset"></button>
+              </div>
+              <label class="field checkbox-field">
+                <input id="settingsSchedulerEnabled" name="schedulerEnabled" type="checkbox">
+                <span data-i18n="settings.scheduler.enabledLabel"></span>
+              </label>
+              <div class="field-row">
+                <label class="field">
+                  <span data-i18n="settings.scheduler.startLabel"></span>
+                  <input id="settingsSchedulerStart" name="schedulerStart" type="number" min="0" max="23" step="1">
+                </label>
+                <label class="field">
+                  <span data-i18n="settings.scheduler.endLabel"></span>
+                  <input id="settingsSchedulerEnd" name="schedulerEnd" type="number" min="0" max="23" step="1">
+                </label>
+              </div>
+            </article>
+
+            <article class="settings-section">
+              <div class="settings-section-head">
+                <span class="section-label" data-i18n="settings.proxy.title"></span>
+                <button class="reset-link reset-section" type="button" data-section="proxy" data-i18n="settings.reset"></button>
+              </div>
+              <label class="field checkbox-field">
+                <input id="settingsProxyEnabled" name="proxyEnabled" type="checkbox">
+                <span data-i18n="settings.proxy.enabledLabel"></span>
+              </label>
+              <label class="field">
+                <span data-i18n="settings.proxy.urlLabel"></span>
+                <input id="settingsProxyUrl" name="proxyUrl" type="text" placeholder="http://127.0.0.1:8080">
+              </label>
+            </article>
+
+            <article class="settings-section">
+              <div class="settings-section-head">
+                <span class="section-label" data-i18n="settings.appearance.title"></span>
+                <button class="reset-link reset-section" type="button" data-section="appearance" data-i18n="settings.reset"></button>
+              </div>
+              <label class="field">
+                <span data-i18n="settings.appearance.themeLabel"></span>
+                <select id="settingsTheme" name="appearanceTheme">
+                  <option value="system" data-i18n="settings.appearance.themeSystem"></option>
+                  <option value="dark" data-i18n="settings.appearance.themeDark"></option>
+                  <option value="light" data-i18n="settings.appearance.themeLight"></option>
+                </select>
+              </label>
+            </article>
+
+          </form>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

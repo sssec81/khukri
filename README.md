@@ -10,11 +10,11 @@
 |---|---|---|
 | 1 - The Steel | Download engine (segmenting, SQLite, retry, queue, throttle) | Complete |
 | 2 - The Sniffer | Browser extension + Native Messaging bridge | Complete |
-| 3 - The Handle | Tauri GUI | Planned |
+| 3 - The Handle | Tauri GUI | In Progress |
 | 4 - The Scabbard | yt-dlp + FFmpeg integration | Planned |
 | 5 - Distribution | CI/CD, code signing, reproducible builds | Planned |
 
-Sprint 2 is implemented and verified in the current `main` branch. See [docs/sprint-2-status.md](docs/sprint-2-status.md) for the ticket-by-ticket board.
+Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working local scaffold in `src-tauri/` + `src/`, and `cargo check -p khukri-app` passes in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
 
 ---
 
@@ -22,7 +22,7 @@ Sprint 2 is implemented and verified in the current `main` branch. See [docs/spr
 
 | Layer | Technology |
 |---|---|
-| Language | Rust (backend), JavaScript (extension) |
+| Language | Rust (backend), JavaScript (extension + current Tauri frontend) |
 | Framework | Tauri 2.0 |
 | Async | Tokio |
 | HTTP | Reqwest (rustls-tls, HTTP/2) |
@@ -60,7 +60,8 @@ khukri/
     |-- khukri-prd.md
     |-- khukri-jira-tickets.md
     |-- integration-hardening.md
-    `-- sprint-2-status.md
+    |-- sprint-2-status.md
+    `-- sprint-3-status.md
 ```
 
 ---
@@ -72,6 +73,7 @@ khukri/
 - Rust toolchain (`rustup`, `cargo`)
 - Linux, WSL2, or macOS for the current native-host development flow
 - Chrome or another Chromium browser for extension testing
+- For Tauri on Ubuntu/WSL: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, and `librsvg2-dev`
 
 ### Build
 
@@ -90,6 +92,26 @@ Current workspace verification:
 ```bash
 cargo test --workspace
 ```
+
+### Tauri app
+
+Current local verification:
+
+- `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing the required GTK/WebKit packages
+- `cargo tauri info` reports a valid Rust/Tauri toolchain once those system packages are present
+- A placeholder tray/app icon currently lives at `src-tauri/icons/icon.png` so `tauri::generate_context!()` can build cleanly
+
+Run the desktop shell:
+
+```bash
+cargo tauri dev
+```
+
+Key paths used by the Tauri shell:
+
+- State DB: `LOCALAPPDATA/Khukri/state.db` on Windows
+- Settings: `LOCALAPPDATA/Khukri/settings.json` on Windows
+- On Linux/macOS, the app falls back to the platform data directory or temp dir when no explicit `KHUKRI_DATA_DIR` override is set
 
 ### Engine smoke test
 
@@ -174,6 +196,8 @@ cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10M
 
 - `Cargo.lock` remains excluded while the repo is still centered on library crates and in-progress application work.
 - Integration risks and mitigations are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
+- The current Sprint 3 UI is intentionally plain JavaScript + HTML + CSS. A richer frontend toolchain can be added later without changing the Rust command surface.
+- The current Tauri frontend keeps its locale file at `src/i18n/en.json` so it ships with the static frontend bundle cleanly.
 
 ---
 

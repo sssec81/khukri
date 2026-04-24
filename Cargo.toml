@@ -1,6 +1,6 @@
 
 [workspace]
-members = ["crates/khukri-engine", "crates/khukri-bridge"]
+members = ["crates/khukri-engine", "crates/khukri-bridge", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]

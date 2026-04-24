@@ -38,14 +38,24 @@ fn macos_preallocate_stub(size: u64) {
 /// Spawned on the blocking thread pool because fallocate can block.
 #[cfg(target_os = "linux")]
 async fn linux_fallocate(file: &File, size: u64) -> Result<()> {
+    use nix::errno::Errno;
     use nix::fcntl::{fallocate, FallocateFlags};
     use std::os::unix::io::AsRawFd;
 
     let fd = file.as_raw_fd();
 
     tokio::task::spawn_blocking(move || {
-        fallocate(fd, FallocateFlags::empty(), 0, size as i64)
-            .map_err(|_| KhukriError::DiskSpaceError { bytes: size })
+        match fallocate(fd, FallocateFlags::empty(), 0, size as i64) {
+            Ok(()) => Ok(()),
+            Err(Errno::EOPNOTSUPP) | Err(Errno::ENOSYS) | Err(Errno::EINVAL) => {
+                tracing::warn!(
+                    bytes = size,
+                    "fallocate unsupported on filesystem; continuing with set_len fallback"
+                );
+                Ok(())
+            }
+            Err(_) => Err(KhukriError::DiskSpaceError { bytes: size }),
+        }
     })
     .await
     .map_err(KhukriError::Join)??;

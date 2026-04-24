@@ -148,7 +148,7 @@
 | **Privacy** | Zero telemetry; zero crash reporting; all state stored locally in SQLite |
 | **Security** | Sandboxed native messaging host; signed binaries; reproducible builds via GitHub Actions; SHA-256 verification for all downloaded sidecars |
 | **Accessibility** | Full keyboard navigation; Tiger Amber (#FF9F1C) meets WCAG AA on Obsidian (#0B0C10); high-contrast mode toggle |
-| **Internationalization** | English first; all UI strings in `i18n/en.json` from day one; RTL-ready layout |
+| **Internationalization** | English first; all UI strings in `src/i18n/en.json` from day one for the current Tauri frontend; RTL-ready layout |
 | **Testing** | Unit tests for the download engine (segment math, retry logic); integration tests for the Native Messaging bridge; E2E smoke test via `tauri-driver` on CI |
 | **Licensing** | GPLv3. Bundled yt-dlp is Unlicense (compatible). Bundled FFmpeg subset must be GPL-compatible build (no non-free codecs). |
 

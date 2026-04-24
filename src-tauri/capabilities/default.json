@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the Khukri desktop shell during Sprint 3.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

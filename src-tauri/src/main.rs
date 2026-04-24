@@ -1,0 +1,964 @@
+mod bootstrap;
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use khukri_engine::{
+    db, spawn_download, DownloadConfig, DownloadHandle, DownloadProgress, DownloadStatus, Priority,
+    ThrottleConfig,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+    Emitter, Manager, State,
+};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+use crate::bootstrap::{app_data_dir, init_db, DbConfig};
+
+const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StartDownloadRequest {
+    url: String,
+    file_path: String,
+    priority: Option<String>,
+    override_threads: Option<u8>,
+    bytes_per_sec: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DownloadListItem {
+    id: String,
+    url: String,
+    file_path: String,
+    total_bytes: Option<i64>,
+    status: String,
+    priority: String,
+    throttle_bytes_per_sec: Option<i64>,
+    failure_reason: Option<String>,
+    created_at: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressEvent {
+    id: String,
+    status: String,
+    bytes_done: u64,
+    total_bytes: Option<u64>,
+    speed_bps: u64,
+    eta_seconds: Option<u64>,
+    segments_done: u32,
+    segments_total: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GeneralSettings {
+    default_download_path: String,
+    max_concurrent: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PerformanceSettings {
+    thread_override: Option<u8>,
+    bandwidth_cap: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SchedulerSettings {
+    enabled: bool,
+    start_hour: u8,
+    end_hour: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ProxySettings {
+    enabled: bool,
+    url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AppearanceSettings {
+    theme: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    general: GeneralSettings,
+    performance: PerformanceSettings,
+    scheduler: SchedulerSettings,
+    proxy: ProxySettings,
+    appearance: AppearanceSettings,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            general: GeneralSettings {
+                default_download_path: app_data_dir().join("downloads").display().to_string(),
+                max_concurrent: 3,
+            },
+            performance: PerformanceSettings {
+                thread_override: None,
+                bandwidth_cap: None,
+            },
+            scheduler: SchedulerSettings {
+                enabled: false,
+                start_hour: 0,
+                end_hour: 23,
+            },
+            proxy: ProxySettings {
+                enabled: false,
+                url: String::new(),
+            },
+            appearance: AppearanceSettings {
+                theme: "system".to_string(),
+            },
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ManagedDownload {
+    handle: Arc<Mutex<DownloadHandle>>,
+}
+
+struct AppState {
+    pool: SqlitePool,
+    active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+    settings: Arc<Mutex<AppSettings>>,
+    quitting: Arc<AtomicBool>,
+}
+
+fn settings_path() -> PathBuf {
+    app_data_dir().join("settings.json")
+}
+
+fn load_settings_from_disk() -> AppSettings {
+    let path = settings_path();
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(_) => return AppSettings::default(),
+    };
+
+    serde_json::from_str(&contents).unwrap_or_else(|_| AppSettings::default())
+}
+
+fn save_settings_to_disk(settings: &AppSettings) -> Result<(), String> {
+    let path = settings_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
+fn parse_priority(value: Option<&str>) -> Priority {
+    match value.unwrap_or("normal").to_ascii_lowercase().as_str() {
+        "high" => Priority::High,
+        "low" => Priority::Low,
+        _ => Priority::Normal,
+    }
+}
+
+fn infer_download_filename(url: &str) -> String {
+    let parsed = url
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let name = parsed
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or("download.bin");
+
+    if name == "__down" {
+        return "download.bin".to_string();
+    }
+
+    name.to_string()
+}
+
+fn normalized_download_target(raw: &str, url: &str) -> PathBuf {
+    let candidate = PathBuf::from(raw.trim());
+    if candidate.extension().is_some() {
+        return candidate;
+    }
+
+    candidate.join(infer_download_filename(url))
+}
+
+fn normalize_output_path(raw: &str, settings: &AppSettings, url: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return normalized_download_target(&settings.general.default_download_path, url);
+    }
+
+    normalized_download_target(trimmed, url)
+}
+
+fn status_label(status: DownloadStatus) -> &'static str {
+    match status {
+        DownloadStatus::Queued => "queued",
+        DownloadStatus::Active => "active",
+        DownloadStatus::Paused => "paused",
+        DownloadStatus::Complete => "complete",
+        DownloadStatus::Failed => "failed",
+    }
+}
+
+fn priority_rank(value: &str) -> u8 {
+    match value.to_ascii_lowercase().as_str() {
+        "high" => 2,
+        "normal" => 1,
+        _ => 0,
+    }
+}
+
+fn download_id_for(url: &str, file_path: &str) -> String {
+    let key = format!("{url}|{file_path}");
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, key.as_bytes()).to_string()
+}
+
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
+    DownloadListItem {
+        id: row.id,
+        url: row.url,
+        file_path: row.file_path,
+        total_bytes: row.total_bytes,
+        status: row.status,
+        priority: row.priority,
+        throttle_bytes_per_sec: row.throttle_bytes_per_sec,
+        failure_reason: row.failure_reason,
+        created_at: row.created_at,
+    }
+}
+
+fn map_progress_event(progress: &DownloadProgress) -> DownloadProgressEvent {
+    DownloadProgressEvent {
+        id: progress.id.clone(),
+        status: status_label(progress.status).to_string(),
+        bytes_done: progress.bytes_done,
+        total_bytes: progress.total_bytes,
+        speed_bps: progress.speed_bps,
+        eta_seconds: progress.eta_seconds,
+        segments_done: progress.segments_done,
+        segments_total: progress.segments_total,
+    }
+}
+
+fn request_with_settings(mut request: StartDownloadRequest, settings: &AppSettings) -> StartDownloadRequest {
+    if request.file_path.trim().is_empty() {
+        request.file_path = settings.general.default_download_path.clone();
+    }
+    if request.override_threads.is_none() {
+        request.override_threads = settings.performance.thread_override;
+    }
+    if request.bytes_per_sec.is_none() {
+        request.bytes_per_sec = settings.performance.bandwidth_cap;
+    }
+    request
+}
+
+async fn refresh_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
+    db::get_download(pool, id)
+        .await
+        .map_err(|e| e.to_string())
+        .map(|row| row.map(map_download_row))
+}
+
+async fn wait_for_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
+    for _ in 0..80 {
+        let snapshot = refresh_download_snapshot(pool, id).await?;
+        if snapshot.is_some() {
+            return Ok(snapshot);
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    Ok(None)
+}
+
+async fn emit_queue_updated(app: &tauri::AppHandle, pool: &SqlitePool) -> Result<(), String> {
+    let queue = db::list_downloads(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(map_download_row)
+        .collect::<Vec<_>>();
+    app.emit("queue-updated", &queue).map_err(|e| e.to_string())
+}
+
+async fn persist_queued_download(
+    pool: &SqlitePool,
+    request: &StartDownloadRequest,
+    settings: &AppSettings,
+) -> Result<DownloadListItem, String> {
+    let request = request_with_settings(request.clone(), settings);
+    let output_path = normalize_output_path(&request.file_path, settings, &request.url);
+    let output_path_string = output_path.to_string_lossy().to_string();
+    let id = download_id_for(&request.url, &output_path_string);
+    let priority = parse_priority(request.priority.as_deref());
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    db::upsert_download(
+        pool,
+        &id,
+        &request.url,
+        &output_path_string,
+        None,
+        priority.as_str(),
+        request.bytes_per_sec,
+        unix_now_secs(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    db::set_download_status(pool, &id, "queued")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    refresh_download_snapshot(pool, &id)
+        .await?
+        .ok_or_else(|| format!("queued download missing after insert: {id}"))
+}
+
+async fn promote_pending_downloads_with_parts(
+    app: &tauri::AppHandle,
+    pool: SqlitePool,
+    active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+    settings: Arc<Mutex<AppSettings>>,
+) -> Result<(), String> {
+    loop {
+        let max_concurrent = settings.lock().await.general.max_concurrent as usize;
+        let active_ids: HashSet<String> = {
+            let guard = active.lock().await;
+            if guard.len() >= max_concurrent {
+                break;
+            }
+            guard.keys().cloned().collect()
+        };
+
+        let mut queued = db::list_downloads(&pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|row| row.status == "queued" && !active_ids.contains(&row.id))
+            .collect::<Vec<_>>();
+
+        queued.sort_by(|left, right| {
+            priority_rank(&right.priority)
+                .cmp(&priority_rank(&left.priority))
+                .then_with(|| left.created_at.cmp(&right.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let Some(row) = queued.into_iter().next() else {
+            break;
+        };
+
+        let request = StartDownloadRequest {
+            url: row.url.clone(),
+            file_path: row.file_path.clone(),
+            priority: Some(row.priority.clone()),
+            override_threads: None,
+            bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
+        };
+
+        if let Err(error) = start_managed_download(
+            app.clone(),
+            pool.clone(),
+            active.clone(),
+            cancelled.clone(),
+            settings.clone(),
+            request,
+        )
+        .await
+        {
+            db::set_download_failed(&pool, &row.id, &error)
+                .await
+                .map_err(|e| e.to_string())?;
+            let _ = emit_queue_updated(app, &pool).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn promote_pending_downloads(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), String> {
+    promote_pending_downloads_with_parts(
+        app,
+        state.pool.clone(),
+        state.active.clone(),
+        state.cancelled.clone(),
+        state.settings.clone(),
+    )
+    .await
+}
+
+async fn start_or_queue_download(
+    app: tauri::AppHandle,
+    pool: SqlitePool,
+    active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+    settings: Arc<Mutex<AppSettings>>,
+    request: StartDownloadRequest,
+) -> Result<DownloadListItem, String> {
+    let settings_snapshot = settings.lock().await.clone();
+    let request = request_with_settings(request, &settings_snapshot);
+    let max_concurrent = settings_snapshot.general.max_concurrent as usize;
+
+    if active.lock().await.len() >= max_concurrent {
+        let snapshot = persist_queued_download(&pool, &request, &settings_snapshot).await?;
+        emit_queue_updated(&app, &pool).await?;
+        return Ok(snapshot);
+    }
+
+    start_managed_download(app, pool, active, cancelled, settings, request).await
+}
+
+fn open_path_in_explorer(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer.exe");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to open folder: {e}"))
+}
+
+async fn start_managed_download(
+    app: tauri::AppHandle,
+    pool: SqlitePool,
+    active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+    settings: Arc<Mutex<AppSettings>>,
+    request: StartDownloadRequest,
+) -> Result<DownloadListItem, String> {
+    let settings_snapshot = settings.lock().await.clone();
+    let request = request_with_settings(request, &settings_snapshot);
+    let output_path = normalize_output_path(&request.file_path, &settings_snapshot, &request.url);
+    let output_path_string = output_path.to_string_lossy().to_string();
+    let priority = parse_priority(request.priority.as_deref());
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let mut config = DownloadConfig::new(request.url.clone(), output_path);
+    config.priority = priority.clone();
+    config.override_threads = request.override_threads;
+    config.throttle = ThrottleConfig {
+        bytes_per_sec: request.bytes_per_sec,
+    };
+
+    let handle = spawn_download(config, pool.clone());
+    let id = handle.id().to_string();
+    let progress = handle.subscribe();
+    let managed = ManagedDownload {
+        handle: Arc::new(Mutex::new(handle)),
+    };
+
+    cancelled.lock().await.remove(&id);
+    active.lock().await.insert(id.clone(), managed);
+
+    let app_for_task = app.clone();
+    let id_for_task = id.clone();
+    let active_for_task = active.clone();
+    let cancelled_for_task = cancelled.clone();
+    let pool_for_task = pool.clone();
+    tokio::spawn(async move {
+        let mut progress_rx = progress;
+        let mut last_emit = None::<Instant>;
+        loop {
+            let snapshot = progress_rx.borrow().clone();
+            let is_terminal = matches!(
+                snapshot.status,
+                DownloadStatus::Complete | DownloadStatus::Failed | DownloadStatus::Paused
+            );
+            let should_emit = last_emit.is_none()
+                || is_terminal
+                || last_emit
+                    .map(|instant| instant.elapsed() >= UI_PROGRESS_INTERVAL)
+                    .unwrap_or(true);
+
+            if should_emit {
+                let payload = map_progress_event(&snapshot);
+                let _ = app_for_task.emit("download-progress", &payload);
+                last_emit = Some(Instant::now());
+            }
+
+            if is_terminal {
+                active_for_task.lock().await.remove(&id_for_task);
+                if cancelled_for_task.lock().await.remove(&snapshot.id) {
+                    let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
+                }
+                let _ = refresh_download_snapshot(&pool_for_task, &snapshot.id).await;
+                let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
+                break;
+            }
+
+            if progress_rx.changed().await.is_err() {
+                active_for_task.lock().await.remove(&id_for_task);
+                let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
+                break;
+            }
+        }
+    });
+
+    let snapshot = wait_for_download_snapshot(&pool, &id).await?.unwrap_or_else(|| DownloadListItem {
+        id: id.clone(),
+        url: request.url.clone(),
+        file_path: output_path_string,
+        total_bytes: None,
+        status: "queued".to_string(),
+        priority: priority.as_str().to_string(),
+        throttle_bytes_per_sec: request.bytes_per_sec.and_then(|value| i64::try_from(value).ok()),
+        failure_reason: None,
+        created_at: 0,
+    });
+    emit_queue_updated(&app, &pool).await?;
+    Ok(snapshot)
+}
+
+async fn pause_all_downloads(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    let downloads: Vec<ManagedDownload> = {
+        let active = state.active.lock().await;
+        active.values().cloned().collect()
+    };
+
+    for download in downloads {
+        download.handle.lock().await.cancel();
+    }
+
+    let rows = db::list_downloads(&state.pool).await.map_err(|e| e.to_string())?;
+    for row in rows {
+        if row.status == "active" || row.status == "queued" {
+            db::set_download_status(&state.pool, &row.id, "paused")
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    emit_queue_updated(app, &state.pool).await?;
+    Ok(())
+}
+
+async fn resume_all_downloads(app: tauri::AppHandle, state: &AppState) -> Result<(), String> {
+    let rows = db::list_downloads(&state.pool).await.map_err(|e| e.to_string())?;
+    for row in rows {
+        if row.status != "paused" {
+            continue;
+        }
+
+        let request = StartDownloadRequest {
+            url: row.url,
+            file_path: row.file_path,
+            priority: Some(row.priority),
+            override_threads: None,
+            bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
+        };
+
+        if let Err(error) = start_or_queue_download(
+            app.clone(),
+            state.pool.clone(),
+            state.active.clone(),
+            state.cancelled.clone(),
+            state.settings.clone(),
+            request,
+        )
+        .await
+        {
+            eprintln!("failed to resume download {}: {}", row.id, error);
+        }
+    }
+
+    Ok(())
+}
+
+fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window was not found".to_string())?;
+    window.show().map_err(|e| e.to_string())?;
+    window.unminimize().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let pause_all = MenuItem::with_id(app, "tray-pause-all", "Pause All", true, None::<&str>)?;
+    let resume_all = MenuItem::with_id(app, "tray-resume-all", "Resume All", true, None::<&str>)?;
+    let open_dashboard =
+        MenuItem::with_id(app, "tray-open-dashboard", "Open Dashboard", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(
+        app,
+        &[&pause_all, &resume_all, &separator, &open_dashboard, &quit],
+    )?;
+
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("Khukri")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray-pause-all" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<AppState>();
+                    let _ = pause_all_downloads(&app, &state).await;
+                });
+            }
+            "tray-resume-all" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<AppState>();
+                    let _ = resume_all_downloads(app.clone(), &state).await;
+                });
+            }
+            "tray-open-dashboard" => {
+                let _ = show_main_window(app);
+            }
+            "tray-quit" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<AppState>();
+                    state.quitting.store(true, Ordering::SeqCst);
+                    let _ = pause_all_downloads(&app, &state).await;
+                    app.exit(0);
+                });
+            }
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+
+    tray.build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_queue(state: State<'_, AppState>) -> Result<Vec<DownloadListItem>, String> {
+    db::list_downloads(&state.pool)
+        .await
+        .map(|rows| rows.into_iter().map(map_download_row).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn start_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: StartDownloadRequest,
+) -> Result<DownloadListItem, String> {
+    start_or_queue_download(
+        app,
+        state.pool.clone(),
+        state.active.clone(),
+        state.cancelled.clone(),
+        state.settings.clone(),
+        request,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn pause_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let handle = {
+        let active = state.active.lock().await;
+        active.get(&id).cloned()
+    };
+
+    if let Some(download) = handle {
+        download.handle.lock().await.cancel();
+        return Ok(());
+    }
+
+    db::set_download_status(&state.pool, &id, "paused")
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = emit_queue_updated(&app, &state.pool).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn resume_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<DownloadListItem, String> {
+    if state.active.lock().await.contains_key(&id) {
+        return refresh_download_snapshot(&state.pool, &id)
+            .await?
+            .ok_or_else(|| format!("download not found: {id}"));
+    }
+
+    let row = db::get_download(&state.pool, &id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("download not found: {id}"))?;
+
+    if row.status == "active" || row.status == "queued" {
+        return Ok(map_download_row(row));
+    }
+
+    if row.status != "paused" {
+        return Err(format!(
+            "only paused downloads can be resumed: {}",
+            row.status
+        ));
+    }
+
+    let request = StartDownloadRequest {
+        url: row.url,
+        file_path: row.file_path,
+        priority: Some(row.priority),
+        override_threads: None,
+        bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
+    };
+
+    start_or_queue_download(
+        app,
+        state.pool.clone(),
+        state.active.clone(),
+        state.cancelled.clone(),
+        state.settings.clone(),
+        request,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn cancel_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let handle = {
+        let active = state.active.lock().await;
+        active.get(&id).cloned()
+    };
+
+    if let Some(download) = handle {
+        state.cancelled.lock().await.insert(id.clone());
+        download.handle.lock().await.cancel();
+        return Ok(());
+    }
+
+    db::set_download_cancelled(&state.pool, &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = emit_queue_updated(&app, &state.pool).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if state.active.lock().await.contains_key(&id) {
+        return Err(format!("cannot remove active download: {id}"));
+    }
+
+    db::delete_download(&state.pool, &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = emit_queue_updated(&app, &state.pool).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn pump_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    promote_pending_downloads(&app, &state).await
+}
+
+#[tauri::command]
+async fn open_download_folder(file_path: String) -> Result<(), String> {
+    let candidate = PathBuf::from(file_path);
+    let target = if candidate.is_dir() {
+        candidate
+    } else {
+        candidate
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .ok_or_else(|| "download path has no parent directory".to_string())?
+    };
+
+    if !target.exists() {
+        return Err(format!("folder does not exist: {}", target.display()));
+    }
+
+    open_path_in_explorer(&target)
+}
+
+#[tauri::command]
+async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    Ok(state.settings.lock().await.clone())
+}
+
+#[tauri::command]
+async fn update_settings(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
+    save_settings_to_disk(&settings)?;
+    {
+        let mut current = state.settings.lock().await;
+        *current = settings.clone();
+    }
+    let _ = app.emit("settings-updated", &settings);
+    let _ = promote_pending_downloads(&app, &state).await;
+    Ok(settings)
+}
+
+#[tauri::command]
+async fn reset_settings_section(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    section: String,
+) -> Result<AppSettings, String> {
+    let defaults = AppSettings::default();
+    let next_settings = {
+        let mut current = state.settings.lock().await;
+        match section.as_str() {
+            "general" => current.general = defaults.general,
+            "performance" => current.performance = defaults.performance,
+            "scheduler" => current.scheduler = defaults.scheduler,
+            "proxy" => current.proxy = defaults.proxy,
+            "appearance" => current.appearance = defaults.appearance,
+            _ => return Err(format!("unknown settings section: {section}")),
+        }
+
+        current.clone()
+    };
+
+    save_settings_to_disk(&next_settings)?;
+    let _ = app.emit("settings-updated", &next_settings);
+    let _ = promote_pending_downloads(&app, &state).await;
+    Ok(next_settings)
+}
+
+fn app_pool_config() -> DbConfig {
+    let data_dir = app_data_dir();
+    let _ = std::fs::create_dir_all(&data_dir);
+    DbConfig {
+        url: format!("sqlite:{}?mode=rwc", data_dir.join("state.db").display()),
+        max_connections: 5,
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    tauri::async_runtime::block_on(async move {
+        let pool = init_db(&app_pool_config())
+            .await
+            .expect("failed to initialize Khukri app database");
+        db::run_migrations(&pool)
+            .await
+            .expect("failed to run Khukri migrations");
+
+        let settings = load_settings_from_disk();
+        save_settings_to_disk(&settings).expect("failed to save Khukri app settings");
+
+        tauri::Builder::default()
+            .manage(AppState {
+                pool,
+                active: Arc::new(Mutex::new(HashMap::new())),
+                cancelled: Arc::new(Mutex::new(HashSet::new())),
+                settings: Arc::new(Mutex::new(settings)),
+                quitting: Arc::new(AtomicBool::new(false)),
+            })
+            .setup(|app| {
+                setup_tray(app)?;
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
+                    let _ = promote_pending_downloads(&app_handle, &state).await;
+                });
+                Ok(())
+            })
+            .invoke_handler(tauri::generate_handler![
+                get_queue,
+                start_download,
+                pause_download,
+                resume_download,
+                cancel_download,
+                remove_download,
+                pump_queue,
+                open_download_folder,
+                get_settings,
+                update_settings,
+                reset_settings_section
+            ])
+            .run(tauri::generate_context!())
+            .expect("error while running tauri application");
+    });
+}
+
+fn main() {
+    run();
+}

@@ -46,3 +46,7 @@ secrets/
 *.pfx
 *.p12
 *.cer
+
+# Local download benchmark artifacts
+tmp/
+.tmpdebug-download.bin

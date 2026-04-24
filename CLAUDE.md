@@ -26,8 +26,6 @@ khukri/
 ├── sidecar/                 # Bundled yt-dlp + FFmpeg binaries
 │   ├── yt-dlp.version
 │   └── yt-dlp.sha256
-├── i18n/
-│   └── en.json              # All UI strings — no hardcoded strings in components
 └── docs/
     ├── khukri-prd.md
     └── khukri-jira-tickets.md
@@ -39,7 +37,7 @@ khukri/
 
 | Layer | Technology |
 |---|---|
-| Language | Rust (backend), TypeScript (extension + frontend) |
+| Language | Rust (backend), JavaScript (extension + current frontend shell) |
 | Framework | Tauri 2.0 |
 | Async runtime | Tokio (full features) |
 | HTTP client | Reqwest (HTTP/2 + keep-alive + stream) |
@@ -109,6 +107,11 @@ CREATE TABLE segments (
 
 Settings path: `$APP_DATA/khukri/settings.json`
 
+Current Tauri bootstrap behavior:
+- Windows: `%LOCALAPPDATA%\Khukri\`
+- Linux: `$XDG_DATA_HOME/khukri` or `~/.local/share/khukri`
+- Override for local/dev runs: `KHUKRI_DATA_DIR`
+
 ---
 
 ## Native Messaging Protocol
@@ -126,7 +129,7 @@ Host ID: `com.khukri.host`
 ## Non-Negotiables
 
 - **Zero telemetry.** No outbound requests except: user-initiated downloads, yt-dlp update check (24h, opt-out toggle), self-update check.
-- **No hardcoded UI strings.** All strings in `i18n/en.json`. Use `t('key')` helper everywhere.
+- **No hardcoded UI strings.** For the current Tauri frontend, keep strings in `src/i18n/en.json`. Use `t('key')`-style lookup everywhere.
 - **No `master` HEAD tracking for yt-dlp.** Tagged releases only, SHA-256 verified before any swap.
 - **Atomic file ops.** Pre-allocate full file size before any segment writes. Hot-swap sidecars via write-to-temp → verify → rename.
 - **`clippy --deny warnings` must pass.** Zero warnings policy enforced in CI.
@@ -145,6 +148,13 @@ Host ID: `com.khukri.host`
 | 5 | CI/CD, code signing, reproducible builds | KHU-501 → KHU-506 |
 
 Cross-cutting: KHU-601 (i18n), KHU-602 (a11y), KHU-603 (zero-telemetry audit)
+
+Sprint 3 current state:
+- `src-tauri/` is in the Cargo workspace as `khukri-app`
+- The desktop shell currently exposes queue, start, pause, resume, cancel, folder-open, and settings commands
+- The current WebView frontend is static `src/index.html` + `src/app.js` + `src/styles.css`
+- `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, and `librsvg2-dev`
+- `cargo tauri dev` is the next runtime verification step
 
 ---
 

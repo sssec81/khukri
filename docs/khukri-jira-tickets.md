@@ -2,6 +2,7 @@
 
 > Generated from PRD v1.1 (LOCKED). Each ticket maps to a sprint deliverable.
 > Labels: `khukri`, `rust`, `tauri`
+> Implementation status is tracked separately in `docs/sprint-2-status.md` and `docs/sprint-3-status.md`.
 
 ---
 
@@ -298,6 +299,10 @@ Bootstrap the Tauri 2.0 application. Wire the `khukri-engine` crate as a depende
 - [ ] Cold-start time ≤ 800ms on Windows (measured from process spawn to first paint)
 - [ ] RAM ≤ 80 MB with 5 active downloads (Khukri process only, not yt-dlp children)
 
+Implementation note (2026-04-24):
+- Linux runtime launch was visually verified from `cargo tauri dev` screenshots.
+- Windows runtime launch and cross-platform acceptance remain open.
+
 ---
 
 ### KHU-302 · "All Downloads" list view with progress bars
@@ -315,6 +320,9 @@ Main window shows all downloads (active, queued, paused, complete, failed) as a 
 - [ ] Completed downloads show "Open Folder" button that opens OS file explorer
 - [ ] Failed downloads show error reason inline (e.g., "404 Not Found")
 - [ ] List is keyboard navigable (arrow keys, Enter to open, Delete to cancel)
+
+Implementation note (2026-04-24):
+- Inline failure reason support is now wired through SQLite, Tauri, and the frontend queue row rendering.
 
 ---
 
@@ -593,17 +601,17 @@ Add a benchmark section to `README.md` comparing Khukri vs. IDM on a standardise
 
 ---
 
-### KHU-601 · i18n scaffold — all strings in `i18n/en.json`
+### KHU-601 · i18n scaffold — all strings in `src/i18n/en.json`
 
 **Type:** Task  
 **Priority:** Medium  
 **Labels:** `i18n`, `frontend`
 
 **Description:**  
-From day one, no hardcoded UI strings. All strings externalised to `i18n/en.json`. RTL-ready layout (no fixed-direction CSS).
+From day one, no hardcoded UI strings. For the current Tauri frontend, all strings are externalised to `src/i18n/en.json`. RTL-ready layout (no fixed-direction CSS).
 
 **Acceptance Criteria:**
-- [ ] `i18n/en.json` exists and covers 100% of UI strings by end of Sprint 3
+- [ ] `src/i18n/en.json` exists and covers 100% of UI strings by end of Sprint 3
 - [ ] `t('key')` helper used throughout frontend
 - [ ] No hardcoded English strings in component files (enforced by ESLint rule or grep CI check)
 

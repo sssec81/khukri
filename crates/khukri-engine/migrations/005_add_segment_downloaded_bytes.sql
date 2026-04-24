@@ -1,0 +1,2 @@
+ALTER TABLE segments
+ADD COLUMN downloaded_bytes INTEGER NOT NULL DEFAULT 0;
