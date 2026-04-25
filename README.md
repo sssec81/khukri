@@ -112,6 +112,7 @@ Planned next:
 - add FFmpeg stitching for split audio/video streams
 - add quality picker in the Blade UI
 - add onboarding/legal notice for media tooling
+- app self-updater: tagged release checks, SHA-256 verification, hot-swap via write-to-temp → verify → rename (KHU-406)
 
 Detailed planning lives in [docs/sprint-4-status.md](docs/sprint-4-status.md).
 
@@ -319,11 +320,14 @@ cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10M
 - TLS: `rustls`
 - Segment writes: each task opens the file independently and seeks to its own offset
 - Pause/resume: deterministic download ID plus SQLite segment state
-- Throttling: token bucket shared across all segment tasks
+- Throttling: token bucket shared across all segment tasks via `Arc<tokio::sync::Mutex>`. Burst cap = 1 second of configured bandwidth. Tokens refill continuously at `bytes_per_sec`. Setting `bytes_per_sec = 0` disables throttling entirely. The bucket is per-download, not global — concurrent downloads each have independent caps
 - Pre-allocation: reserve full disk space before writes begin
 - Cancellation: cooperative cancellation support through the engine entrypoints
 - Progress API: `spawn_download` returns a handle with watch-based updates
 - Config safety: invalid runtime config is rejected early with explicit errors
+- Range-unaware servers: the engine sends a HEAD probe to check `Accept-Ranges` before committing to segmented mode. If a server returns `200 OK` instead of `206 Partial Content` in response to a `Range` request, the engine classifies it as `NoRangeSupport` and falls back to a single-thread streaming download rather than writing at the wrong offset and corrupting output
+- Proxy: unauthenticated proxy URL only (`http://host:port`). Credentials can be embedded in the URL (`http://user:pass@host:port`) as supported by the underlying HTTP client, but there are no separate username/password fields in the config
+- Checksum: SHA-256 is used in the engine integration tests to verify byte-for-byte download integrity. It is not currently exposed as a user-facing post-download verification step
 
 ---
 
