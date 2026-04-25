@@ -40,6 +40,9 @@ Mitigation:
 - Set a busy timeout and keep transactions short.
 - Prefer a single write path for high-frequency progress writes.
 
+Current status:
+- WAL mode is now enabled during Tauri DB bootstrap.
+
 ### 4. Native Messaging Path Friction (Windows/Linux)
 
 Risk:

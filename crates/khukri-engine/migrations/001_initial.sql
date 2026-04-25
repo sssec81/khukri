@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS downloads (
     url         TEXT    NOT NULL,
     file_path   TEXT    NOT NULL,
     total_bytes INTEGER,
-    status      TEXT    NOT NULL DEFAULT 'queued', -- queued | active | paused | complete | failed
+    status      TEXT    NOT NULL DEFAULT 'queued', -- queued | active | paused | complete | failed | cancelled
     created_at  INTEGER NOT NULL
 );
 

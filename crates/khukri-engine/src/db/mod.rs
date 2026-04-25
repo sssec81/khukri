@@ -16,6 +16,8 @@ pub struct DownloadRow {
     pub total_bytes: Option<i64>,
     pub status: String,
     pub priority: String,
+    pub throttle_bytes_per_sec: Option<i64>,
+    pub failure_reason: Option<String>,
     pub created_at: i64,
 }
 
@@ -28,6 +30,8 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for DownloadRow {
             total_bytes: row.try_get("total_bytes")?,
             status: row.try_get("status")?,
             priority: row.try_get("priority")?,
+            throttle_bytes_per_sec: row.try_get("throttle_bytes_per_sec")?,
+            failure_reason: row.try_get("failure_reason")?,
             created_at: row.try_get("created_at")?,
         })
     }
@@ -70,6 +74,7 @@ pub async fn upsert_download(
     file_path: &str,
     total_bytes: Option<u64>,
     priority: &str,
+    throttle_bytes_per_sec: Option<u64>,
     now_secs: i64,
 ) -> Result<()> {
     // SQLite stores integers as i64. No real filesystem supports files > i64::MAX (9.2 EB),
@@ -77,20 +82,35 @@ pub async fn upsert_download(
     // correctly via the same cast on the way out.
     #[allow(clippy::cast_possible_wrap)]
     let total = total_bytes.map(|b| b as i64);
+    #[allow(clippy::cast_possible_wrap)]
+    let throttle = throttle_bytes_per_sec.map(|b| b as i64);
     sqlx::query(
-        "INSERT INTO downloads (id, url, file_path, total_bytes, status, priority, created_at)
-         VALUES (?, ?, ?, ?, 'queued', ?, ?)
+        "INSERT INTO downloads (
+            id,
+            url,
+            file_path,
+            total_bytes,
+            status,
+            priority,
+            throttle_bytes_per_sec,
+            failure_reason,
+            created_at
+         )
+         VALUES (?, ?, ?, ?, 'queued', ?, ?, NULL, ?)
          ON CONFLICT(id) DO UPDATE SET
             url = excluded.url,
             file_path = excluded.file_path,
             total_bytes = COALESCE(downloads.total_bytes, excluded.total_bytes),
-            priority = excluded.priority",
+            priority = excluded.priority,
+            throttle_bytes_per_sec = excluded.throttle_bytes_per_sec,
+            failure_reason = NULL",
     )
     .bind(id)
     .bind(url)
     .bind(file_path)
     .bind(total)
     .bind(priority)
+    .bind(throttle)
     .bind(now_secs)
     .execute(pool)
     .await?;
@@ -98,7 +118,12 @@ pub async fn upsert_download(
 }
 
 pub async fn set_download_status(pool: &SqlitePool, id: &str, status: &str) -> Result<()> {
-    sqlx::query("UPDATE downloads SET status = ? WHERE id = ?")
+    sqlx::query(
+        "UPDATE downloads
+         SET status = ?, failure_reason = CASE WHEN ? = 'failed' THEN failure_reason ELSE NULL END
+         WHERE id = ?",
+    )
+        .bind(status)
         .bind(status)
         .bind(id)
         .execute(pool)
@@ -112,6 +137,40 @@ pub async fn get_download(pool: &SqlitePool, id: &str) -> Result<Option<Download
         .fetch_optional(pool)
         .await?;
     Ok(row)
+}
+
+pub async fn list_downloads(pool: &SqlitePool) -> Result<Vec<DownloadRow>> {
+    let rows = sqlx::query_as::<_, DownloadRow>(
+        "SELECT * FROM downloads ORDER BY created_at DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn set_download_failed(pool: &SqlitePool, id: &str, reason: &str) -> Result<()> {
+    sqlx::query("UPDATE downloads SET status = 'failed', failure_reason = ? WHERE id = ?")
+        .bind(reason)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_download_cancelled(pool: &SqlitePool, id: &str) -> Result<()> {
+    sqlx::query("UPDATE downloads SET status = 'cancelled', failure_reason = NULL WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_download(pool: &SqlitePool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM downloads WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 // ── Segments ──────────────────────────────────────────────────────────────────

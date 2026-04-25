@@ -1,7 +1,14 @@
 const FALLBACK_STRINGS = {
-  "app.title": "Khukri",
-  "nav.downloads": "Downloads",
+  "app.kicker": "Sprint 3",
+  "app.title": "Khukri Handle",
+  "app.subtitle": "A minimal Tauri shell wired to the real engine so the downloads list, commands, and settings flow can land on a solid base.",
+  "nav.downloads": "All Downloads",
   "nav.settings": "Settings",
+  "hero.eyebrow": "KHU-301",
+  "hero.title": "The engine is now wired into a desktop shell.",
+  "hero.copy": "This starter surface is intentionally small: queue reads, start download, and progress events are all connected so Sprint 3 can grow ticket by ticket.",
+  "composer.title": "Queue a download",
+  "composer.copy": "Use a direct file URL to verify the end-to-end Tauri command path.",
   "composer.urlLabel": "Download URL",
   "composer.outputLabel": "Output path",
   "composer.priorityLabel": "Priority",
@@ -10,39 +17,52 @@ const FALLBACK_STRINGS = {
   "priority.normal": "Normal",
   "priority.low": "Low",
   "actions.start": "Start Download",
-  "actions.refresh": "Refresh",
+  "actions.refresh": "Refresh Queue",
   "actions.new_download": "New Download",
   "actions.remove": "Remove",
+  "downloads.title": "Current queue",
+  "downloads.copy": "Rows here come from the SQLite-backed engine state, not mock data.",
   "downloads.emptyTitle": "No downloads yet",
-  "downloads.emptyCopy": "Click New Download to add a file to the queue.",
+  "downloads.emptyCopy": "Start one from the form above and it will appear here once the engine writes the queue row.",
+  "downloads.priorityValue": "Priority",
+  "downloads.totalBytesValue": "Total bytes",
   "downloads.unknownBytes": "unknown",
+  "downloads.speedValue": "Speed",
+  "downloads.etaValue": "ETA",
+  "downloads.progressValue": "Progress",
   "downloads.actionOpen": "Open Folder",
   "downloads.actionPause": "Pause",
   "downloads.actionResume": "Resume",
   "downloads.actionCancel": "Cancel",
   "downloads.failureLabel": "Failure",
   "status.ready": "Ready",
-  "status.loading": "Loading...",
+  "status.loading": "Loading queue...",
   "status.started": "Download queued.",
   "status.failed": "Something went wrong. Check the Rust console for details.",
-  "settings.title": "Preferences",
-  "settings.reset": "Reset",
-  "settings.save": "Save",
-  "settings.saved": "Saved.",
+  "settings.title": "Settings",
+  "settings.copy": "Changes persist to the desktop app data directory and apply to new downloads immediately.",
+  "settings.reset": "Reset to defaults",
+  "settings.save": "Save Settings",
+  "settings.saved": "Settings saved.",
   "settings.general.title": "General",
+  "settings.general.copy": "Pick where downloads land and how many you want running in parallel later.",
   "settings.general.pathLabel": "Default download path",
   "settings.general.concurrentLabel": "Max concurrent downloads",
   "settings.performance.title": "Performance",
+  "settings.performance.copy": "Set per-download overrides that new downloads will inherit.",
   "settings.performance.threadsLabel": "Thread override",
   "settings.performance.bandwidthLabel": "Bandwidth cap (bytes/sec)",
   "settings.scheduler.title": "Scheduler",
+  "settings.scheduler.copy": "Reserve a time window for automated downloads.",
   "settings.scheduler.enabledLabel": "Enable scheduler window",
   "settings.scheduler.startLabel": "Start hour",
   "settings.scheduler.endLabel": "End hour",
   "settings.proxy.title": "Proxy",
+  "settings.proxy.copy": "Store proxy preferences now so the later networking work has a stable home.",
   "settings.proxy.enabledLabel": "Enable proxy",
   "settings.proxy.urlLabel": "Proxy URL",
   "settings.appearance.title": "Appearance",
+  "settings.appearance.copy": "Choose how the desktop shell should resolve its theme.",
   "settings.appearance.themeLabel": "Theme",
   "settings.appearance.themeSystem": "Follow system",
   "settings.appearance.themeDark": "Dark",
@@ -53,6 +73,14 @@ const progressById = new Map();
 let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
+
+function persistThemePreference(themeMode) {
+  try {
+    localStorage.setItem("khukri-theme", themeMode || "system");
+  } catch {
+    // Ignore storage failures; theme still applies for the current session.
+  }
+}
 
 async function loadStrings() {
   try {
@@ -133,6 +161,42 @@ function baseName(path) {
   return path.split(/[/\\]/).pop() || path;
 }
 
+function fileExtInfo(filePath) {
+  const name = baseName(filePath);
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return { ext: "bin", category: "other" };
+  const ext = name.slice(dot + 1).toLowerCase().slice(0, 4);
+  const video     = ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v"];
+  const audio     = ["mp3", "wav", "flac", "aac", "ogg", "m4a", "opus"];
+  const image     = ["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico"];
+  const archive   = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst"];
+  const doc       = ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "txt", "csv"];
+  const installer = ["exe", "msi", "deb", "apk", "dmg", "pkg", "rpm"];
+  if (video.includes(ext))     return { ext, category: "video" };
+  if (audio.includes(ext))     return { ext, category: "audio" };
+  if (image.includes(ext))     return { ext, category: "image" };
+  if (archive.includes(ext))   return { ext, category: "archive" };
+  if (doc.includes(ext))       return { ext, category: "doc" };
+  if (installer.includes(ext)) return { ext, category: "installer" };
+  return { ext: ext || "bin", category: "other" };
+}
+
+function htmlEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function safeStatus(value) {
+  const status = String(value ?? "");
+  return ["queued", "active", "paused", "complete", "failed", "cancelled"].includes(status)
+    ? status
+    : "queued";
+}
+
 function rowPrimaryAction(item) {
   const status = item.liveStatus ?? item.status;
   if (status === "complete") {
@@ -150,10 +214,10 @@ function rowPrimaryAction(item) {
 function mergeQueueWithProgress(items) {
   return items.map((item) => {
     const progress = progressById.get(item.id);
-    const hasLiveResumeProgress = progress && ["queued", "active"].includes(progress.status);
+    const hasLiveActiveProgress = progress && ["queued", "active"].includes(progress.status);
     const backendTerminal = ["failed", "complete", "cancelled"].includes(item.status)
-      || (item.status === "paused" && !hasLiveResumeProgress);
-    const liveStatus = hasLiveResumeProgress ? progress.status : (backendTerminal ? item.status : (progress?.status ?? item.status));
+      || (item.status === "paused" && !hasLiveActiveProgress);
+    const liveStatus = hasLiveActiveProgress ? progress.status : (backendTerminal ? item.status : (progress?.status ?? item.status));
     const totalBytes = progress?.totalBytes ?? item.totalBytes ?? null;
     const bytesDone = liveStatus === "complete" && totalBytes != null
       ? Number(totalBytes)
@@ -171,6 +235,29 @@ function mergeQueueWithProgress(items) {
       etaSeconds: backendTerminal ? null : (progress?.etaSeconds ?? null),
       percent: liveStatus === "complete" ? 100 : percent
     };
+  });
+}
+
+function updateLocalDownloadState(id, updater) {
+  currentQueue = currentQueue.map((entry) => {
+    if (entry.id !== id) {
+      return entry;
+    }
+    return updater(entry);
+  });
+}
+
+function setOptimisticProgress(id, status) {
+  const previous = progressById.get(id);
+  if (!previous) {
+    return;
+  }
+
+  progressById.set(id, {
+    ...previous,
+    status,
+    speedBps: status === "active" ? previous.speedBps : 0,
+    etaSeconds: status === "active" ? previous.etaSeconds : null
   });
 }
 
@@ -209,40 +296,57 @@ function renderQueue(items) {
       actionLabel = strings["downloads.actionPause"];
     }
 
-    const liveStatus = item.liveStatus ?? item.status;
+    const liveStatus = safeStatus(item.liveStatus ?? item.status);
     const speedText = item.speedBps > 0 ? `${formatBytes(item.speedBps)}/s` : null;
     const etaText = item.etaSeconds > 0 ? formatEta(item.etaSeconds) : null;
     const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : null;
     const failureText = item.failureReason || null;
     const percent = liveStatus === "complete" ? 100 : item.percent;
+    const { ext, category } = fileExtInfo(item.filePath);
+    const escapedId = htmlEscape(item.id);
+    const escapedFilePath = htmlEscape(item.filePath);
+    const escapedBaseName = htmlEscape(baseName(item.filePath));
+    const escapedUrl = htmlEscape(item.url);
+    const escapedFailureText = htmlEscape(failureText);
+    const escapedActionLabel = htmlEscape(actionLabel);
+    const escapedCancelLabel = htmlEscape(strings["downloads.actionCancel"]);
+    const escapedFailureLabel = htmlEscape(strings["downloads.failureLabel"]);
 
     return `
-      <article class="download-item" tabindex="0" data-row-id="${item.id}" data-row-index="${index}" aria-label="${item.filePath}">
-        <div class="row-top">
-          <span class="row-name">${baseName(item.filePath)}</span>
-          <span class="pill pill--${item.liveStatus}">${item.liveStatus}</span>
-          <div class="row-actions">
-            ${hasPrimaryAction
-        ? `<button class="row-btn row-action" type="button" data-action="${action}" data-id="${item.id}">${actionLabel}</button>`
-        : ""}
-            ${canCancel ? `<button class="row-btn row-btn-danger row-action" type="button" data-action="cancel" data-id="${item.id}">${strings["downloads.actionCancel"]}</button>` : ""}
-          </div>
+      <article class="download-item" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" aria-label="${escapedBaseName}">
+        <div class="file-ext file-ext--${htmlEscape(category)}" aria-hidden="true">
+          ${htmlEscape(ext.toUpperCase())}
+          <div class="file-ext-dot"></div>
         </div>
-        <div class="row-bottom">
-          <span class="row-url" title="${item.url}">${item.url}</span>
-          <div class="row-progress">
+        <div class="row-body">
+          <div class="row-top">
+            <span class="row-name">${escapedBaseName}</span>
+            <span class="pill pill--${liveStatus}">${htmlEscape(liveStatus)}</span>
+            <div class="row-actions">
+              ${hasPrimaryAction
+        ? `<button class="row-btn row-action" type="button" data-action="${htmlEscape(action)}" data-id="${escapedId}">${escapedActionLabel}</button>`
+        : ""}
+              ${canCancel ? `<button class="row-btn row-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}">${escapedCancelLabel}</button>` : ""}
+            </div>
+          </div>
+          <div class="row-mid">
             <div class="progress-track" aria-hidden="true">
-              <div class="progress-fill progress-fill--${item.liveStatus}" style="width:${percent.toFixed(1)}%"></div>
+              <div class="progress-fill progress-fill--${liveStatus}" style="width:${percent.toFixed(1)}%"></div>
             </div>
             <span class="row-pct">${percent.toFixed(0)}%</span>
           </div>
-          ${speedText ? `<span class="row-stat">${speedText}</span>` : ""}
-          ${etaText ? `<span class="row-stat">${etaText}</span>` : ""}
-          ${sizeText ? `<span class="row-stat">${sizeText}</span>` : ""}
-        </div>
-        ${item.liveStatus === "failed" && failureText
-        ? `<div class="row-error">${strings["downloads.failureLabel"]}: ${failureText}</div>`
+          <div class="row-bot">
+            <span class="row-url" title="${escapedUrl}">${escapedUrl}</span>
+            <div class="row-stats">
+              ${speedText ? `<span class="row-stat row-stat--speed">${htmlEscape(speedText)}</span>` : ""}
+              ${etaText ? `<span class="row-stat">${htmlEscape(etaText)}</span>` : ""}
+              ${sizeText ? `<span class="row-stat">${htmlEscape(sizeText)}</span>` : ""}
+            </div>
+          </div>
+          ${item.liveStatus === "failed" && failureText
+        ? `<div class="row-error">${escapedFailureLabel}: ${escapedFailureText}</div>`
         : ""}
+        </div>
       </article>
     `;
   }).join("");
@@ -278,8 +382,10 @@ function resolvedTheme(themeMode) {
 }
 
 function applyTheme(settings) {
-  const nextTheme = resolvedTheme(settings?.appearance?.theme || "system");
+  const themeMode = settings?.appearance?.theme || "system";
+  const nextTheme = resolvedTheme(themeMode);
   document.documentElement.dataset.theme = nextTheme;
+  persistThemePreference(themeMode);
 }
 
 function syncDownloadDefaults(settings) {
@@ -370,22 +476,44 @@ async function handleRowAction(action, id) {
     return;
   }
 
-  if (action === "pause") {
-    await invoke("pause_download", { id });
-    currentQueue = currentQueue.map((entry) => entry.id === id
-      ? { ...entry, status: "paused" }
-      : entry);
+  const previousQueue = currentQueue.map((entry) => ({ ...entry }));
+  const previousProgress = progressById.has(id)
+    ? { ...progressById.get(id) }
+    : undefined;
+
+  try {
+    if (action === "pause") {
+      updateLocalDownloadState(id, (entry) => ({ ...entry, status: "paused" }));
+      setOptimisticProgress(id, "paused");
+      renderQueue(currentQueue);
+      await invoke("pause_download", { id });
+    } else if (action === "resume") {
+      updateLocalDownloadState(id, (entry) => ({ ...entry, status: "queued" }));
+      setOptimisticProgress(id, "queued");
+      renderQueue(currentQueue);
+      await invoke("resume_download", { id });
+    } else if (action === "cancel") {
+      updateLocalDownloadState(id, (entry) => ({ ...entry, status: "cancelled" }));
+      renderQueue(currentQueue);
+      await invoke("cancel_download", { id });
+      progressById.delete(id);
+    } else if (action === "remove") {
+      currentQueue = currentQueue.filter((entry) => entry.id !== id);
+      renderQueue(currentQueue);
+      await invoke("remove_download", { id });
+      progressById.delete(id);
+    } else if (action === "open") {
+      await invoke("open_download_folder", { filePath: item.filePath });
+    }
+  } catch (error) {
+    currentQueue = previousQueue;
+    if (previousProgress) {
+      progressById.set(id, previousProgress);
+    } else {
+      progressById.delete(id);
+    }
     renderQueue(currentQueue);
-  } else if (action === "resume") {
-    await invoke("resume_download", { id });
-  } else if (action === "cancel") {
-    await invoke("cancel_download", { id });
-    progressById.delete(id);
-  } else if (action === "remove") {
-    await invoke("remove_download", { id });
-    progressById.delete(id);
-  } else if (action === "open") {
-    await invoke("open_download_folder", { filePath: item.filePath });
+    throw error;
   }
 
   document.getElementById("formStatus").textContent = strings["status.ready"];
@@ -404,6 +532,9 @@ async function saveSettings() {
 
 async function resetSettingsSection(section) {
   currentSettings = await invoke("reset_settings_section", { section });
+  populateSettingsForm(currentSettings);
+  syncDownloadDefaults(currentSettings);
+  applyTheme(currentSettings);
 }
 
 async function registerCloseToTray() {
@@ -450,13 +581,19 @@ async function main() {
 
   currentSettings = await invoke("get_settings");
   applySettings(currentSettings);
+  document.body.classList.add("app-ready");
+
+  const composer = document.getElementById("downloadsComposer");
 
   newDownloadButton.addEventListener("click", () => {
-    const composer = document.getElementById("downloadsComposer");
     composer.hidden = !composer.hidden;
     if (!composer.hidden) {
       document.getElementById("downloadUrl").focus();
     }
+  });
+
+  document.getElementById("composerClose").addEventListener("click", () => {
+    composer.hidden = true;
   });
 
   form.addEventListener("submit", async (event) => {
@@ -475,7 +612,7 @@ async function main() {
       await invoke("start_download", { request });
       form.reset();
       syncDownloadDefaults(currentSettings);
-      document.getElementById("downloadsComposer").hidden = true;
+      composer.hidden = true;
       await refreshQueue(strings, { preserveStatus: true });
       statusNode.textContent = strings["status.started"];
     } catch (error) {

@@ -1,20 +1,132 @@
 # Khukri
 
-> Khukri exists because I wanted a downloader that does not phone home, does not eat RAM, and does not turn into a lag machine under parallel downloads.
+> A modern, local-first download manager built in Rust.
+> Fast segmented downloads, resumable state, browser handoff, and a desktop shell without the usual bloat.
 
 ---
 
-## Status
+## Project Signals
+
+- License: GPLv3
+- Current status: Sprint 3 near complete
+- Verified locally: `cargo check -p khukri-engine`, `cargo check -p khukri-app`
+- Platform direction: Windows, Linux, macOS
+
+Note:
+CI/build badges are intentionally not shown yet because the repo does not have a finalized public release pipeline for them.
+
+---
+
+## Demo
+
+Desktop shell status:
+
+- working Tauri desktop shell
+- queue view with progress, speed, ETA, and row actions
+- browser handoff architecture already in place
+
+Screenshot/demo asset:
+
+- a polished public screenshot or GIF should be added here before launch
+- the current repo includes the working app icon at `src-tauri/icons/icon.png`, but no final showcase image yet
+
+---
+
+## Why Khukri
+
+Most download managers still feel stuck in another era: Windows-only, heavy, ad-filled, opaque, or fragile under real parallel load.
+
+Khukri is the opposite:
+
+- local-first: no account, no tracking, no phone-home dependency
+- performance-focused: segmented downloads, throttling, retry logic, and resumable state
+- engineered for reliability: Rust core, SQLite-backed progress, deterministic resume behavior
+- modern architecture: browser extension + native bridge + desktop shell
+- cross-platform direction: engine and app are being built for Windows, Linux, and macOS
+
+If IDM is the benchmark people still compare against, Khukri is aiming to be the modern open alternative with a cleaner architecture and a better trust model.
+
+---
+
+## Why Now
+
+| Question | Traditional Download Managers | Khukri |
+|---|---|---|
+| Trust model | Often opaque, bundled, ad-heavy, or legacy-first | Local-first, no account, no phone-home dependency |
+| Core engine | Mature but often closed and hard to inspect | Rust engine with explicit retry, throttling, resume, and SQLite-backed state |
+| Browser integration | Usually works, but tied to old UX assumptions | Extension + native bridge + desktop app architecture |
+| Cross-platform future | Often Windows-first or Windows-only | Built with cross-platform direction from the start |
+| Media roadmap | Often bolted on | Sprint 4 plans `yt-dlp` + FFmpeg as a first-class capability |
+| Developer confidence | Hard to audit and hard to extend | Codebase is inspectable, documented, and built in the open |
+
+This project exists because the downloader space still has demand, but much of the software in it still feels untrusted, bloated, or outdated.
+
+---
+
+## Current Status
 
 | Sprint | Deliverable | Status |
 |---|---|---|
 | 1 - The Steel | Download engine (segmenting, SQLite, retry, queue, throttle) | Complete |
 | 2 - The Sniffer | Browser extension + Native Messaging bridge | Complete |
-| 3 - The Handle | Tauri GUI | In Progress |
+| 3 - The Handle | Tauri GUI | Near Complete |
 | 4 - The Scabbard | yt-dlp + FFmpeg integration | Planned |
 | 5 - Distribution | CI/CD, code signing, reproducible builds | Planned |
 
-Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working local scaffold in `src-tauri/` + `src/`, and `cargo check -p khukri-app` passes in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
+Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working desktop shell in `src-tauri/` + `src/`, and both `cargo check -p khukri-engine` and `cargo check -p khukri-app` pass in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
+Sprint 4 planning is now tracked in [docs/sprint-4-status.md](docs/sprint-4-status.md).
+
+---
+
+## What It Already Does
+
+- segmented parallel downloads with retry and resume
+- SQLite-backed download and segment state
+- pause, resume, cancel, remove, and queue management
+- bandwidth caps and per-download priority
+- browser extension plus native bridge handoff
+- desktop UI with progress bars, speed, ETA, settings, and tray integration
+- scheduler gating and proxy-aware download requests
+
+Planned next:
+
+- yt-dlp + FFmpeg integration for media downloads
+- richer packaging and release workflows
+- production polish across install, branding, and platform verification
+
+---
+
+## Roadmap
+
+### Sprint 3 Finish Line
+
+- finish stabilization and edge-case QA
+- verify Windows runtime behavior
+- polish tray-state behavior
+- replace placeholder branding assets
+
+### Sprint 4: Media Support
+
+- bundle pinned `yt-dlp`
+- invoke media downloads from Rust with progress reporting
+- add FFmpeg stitching for split audio/video streams
+- add quality picker in the Blade UI
+- add onboarding/legal notice for media tooling
+
+Detailed planning lives in [docs/sprint-4-status.md](docs/sprint-4-status.md).
+
+---
+
+## Why It Can Win
+
+Khukri is not trying to win by adding random features first. It wins if it becomes the downloader people trust:
+
+- fast enough to replace IDM for everyday use
+- transparent enough that developers and power users feel safe running it
+- lightweight enough to leave open all day
+- reliable enough that pause/resume and crash recovery are boring
+
+That combination is rare, and that is the opportunity.
 
 ---
 
@@ -44,6 +156,19 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 
 ---
 
+## Current Limitations
+
+- Sprint 3 is not fully release-polished yet
+- tray `Pause All` / `Resume All` enable-disable state still needs refinement
+- Windows runtime verification is still pending
+- `Open Folder` can be unreliable in WSL or desktop-less Linux setups
+- branding, screenshots, and production packaging polish are not final
+- Sprint 4 media features are planned, not shipped yet
+
+That said, the core engine, bridge, and desktop-shell path are already real and working.
+
+---
+
 ## Architecture
 
 ```text
@@ -61,7 +186,8 @@ khukri/
     |-- khukri-jira-tickets.md
     |-- integration-hardening.md
     |-- sprint-2-status.md
-    `-- sprint-3-status.md
+    |-- sprint-3-status.md
+    `-- sprint-4-status.md
 ```
 
 ---
@@ -97,14 +223,23 @@ cargo test --workspace
 
 Current local verification:
 
+- `cargo check -p khukri-engine` passes on Ubuntu 24.04 / WSL
 - `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing the required GTK/WebKit packages
 - `cargo tauri info` reports a valid Rust/Tauri toolchain once those system packages are present
+- `cargo tauri dev` launches successfully on Ubuntu 24.04 / WSL
 - A placeholder tray/app icon currently lives at `src-tauri/icons/icon.png` so `tauri::generate_context!()` can build cleanly
 
 Run the desktop shell:
 
 ```bash
 cargo tauri dev
+```
+
+Quick verification from the current repo state:
+
+```bash
+cargo check -p khukri-engine
+cargo check -p khukri-app
 ```
 
 Key paths used by the Tauri shell:
@@ -143,9 +278,9 @@ cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10M
 | `engine/retry.rs` | Exponential backoff with jitter; permanent errors (403, 404) are not retried |
 | `engine/prealloc.rs` | Platform-specific pre-allocation before writes |
 | `engine/throttle.rs` | Shared token-bucket rate limiter |
-| `engine/queue.rs` | Priority queue with hot-configurable concurrency |
+| `src-tauri/src/main.rs` queue orchestration | Priority ordering, scheduler gating, and max-concurrency promotion for the desktop app |
 | `db/mod.rs` | SQLite persistence for download and segment state |
-| `config.rs` | Early validation for URL, path, threads, and custom headers |
+| `config.rs` | Early validation for URL, path, threads, proxy URL, and custom headers |
 
 ### Test coverage
 
@@ -198,6 +333,21 @@ cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10M
 - Integration risks and mitigations are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
 - The current Sprint 3 UI is intentionally plain JavaScript + HTML + CSS. A richer frontend toolchain can be added later without changing the Rust command surface.
 - The current Tauri frontend keeps its locale file at `src/i18n/en.json` so it ships with the static frontend bundle cleanly.
+- Sprint 3 currently includes queue actions, persisted settings, scheduler gating, proxy-aware downloads, failed-download reason display, and resumable progress restoration.
+- Remaining Sprint 3 gaps are mostly stabilization work: tray menu enable/disable state, Windows runtime verification, branded icons, and a final QA pass on edge-case errors.
+
+---
+
+## Contributing
+
+If you are interested in download engines, Rust systems work, browser-to-native integration, or building a credible IDM alternative, this project is already at the fun stage.
+
+Good areas to jump in:
+
+- Sprint 3 stabilization and cross-platform QA
+- Sprint 4 media pipeline (`yt-dlp`, FFmpeg, updater)
+- frontend polish and onboarding
+- packaging, install flows, and release automation
 
 ---
 

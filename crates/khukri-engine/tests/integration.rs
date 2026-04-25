@@ -78,6 +78,7 @@ fn cfg(url: impl Into<String>, out: impl Into<std::path::PathBuf>) -> DownloadCo
         throttle: ThrottleConfig {
             bytes_per_sec: None,
         },
+        proxy_url: None,
         custom_headers: Vec::new(),
     }
 }

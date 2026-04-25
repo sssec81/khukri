@@ -85,6 +85,7 @@ pub struct DownloadConfig {
     pub retry: RetryConfig,
     pub priority: Priority,
     pub throttle: ThrottleConfig,
+    pub proxy_url: Option<String>,
     pub custom_headers: Vec<(String, String)>,
 }
 
@@ -98,6 +99,7 @@ impl DownloadConfig {
             retry: RetryConfig::default(),
             priority: Priority::default(),
             throttle: ThrottleConfig::default(),
+            proxy_url: None,
             custom_headers: Vec::new(),
         }
     }
@@ -168,6 +170,20 @@ impl DownloadConfig {
                     reason: "must be in range 1..=128".to_string(),
                 });
             }
+        }
+
+        if let Some(proxy_url) = &self.proxy_url {
+            if proxy_url.trim().is_empty() {
+                return Err(KhukriError::InvalidConfig {
+                    field: "proxy_url",
+                    reason: "proxy URL must not be empty".to_string(),
+                });
+            }
+
+            reqwest::Proxy::all(proxy_url).map_err(|e| KhukriError::InvalidConfig {
+                field: "proxy_url",
+                reason: format!("invalid proxy URL: {e}"),
+            })?;
         }
 
         for (name, value) in &self.custom_headers {

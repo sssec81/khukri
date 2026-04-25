@@ -36,8 +36,17 @@ pub fn app_data_dir() -> PathBuf {
 
 /// Initialize SQLite pool in the application/bootstrap layer.
 pub async fn init_db(cfg: &DbConfig) -> Result<SqlitePool, sqlx::Error> {
-    SqlitePoolOptions::new()
+    let pool = SqlitePoolOptions::new()
         .max_connections(cfg.max_connections)
         .connect(&cfg.url)
-        .await
+        .await?;
+
+    sqlx::query("PRAGMA journal_mode = WAL;")
+        .execute(&pool)
+        .await?;
+    sqlx::query("PRAGMA foreign_keys = ON;")
+        .execute(&pool)
+        .await?;
+
+    Ok(pool)
 }

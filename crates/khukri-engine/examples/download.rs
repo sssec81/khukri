@@ -79,6 +79,7 @@ async fn main() {
         throttle: ThrottleConfig {
             bytes_per_sec: speed_limit,
         },
+        proxy_url: None,
         custom_headers: Vec::new(),
     };
 

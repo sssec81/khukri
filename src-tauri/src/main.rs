@@ -1,5 +1,6 @@
 mod bootstrap;
 
+use chrono::{Local, Timelike};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use uuid::Uuid;
 use crate::bootstrap::{app_data_dir, init_db, DbConfig};
 
 const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
+const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -192,16 +194,19 @@ fn infer_download_filename(url: &str) -> String {
         .filter(|segment| !segment.is_empty())
         .unwrap_or("download.bin");
 
-    if name == "__down" {
-        return "download.bin".to_string();
-    }
-
     name.to_string()
 }
 
-fn normalized_download_target(raw: &str, url: &str) -> PathBuf {
+fn normalized_download_target(raw: &str, url: &str, prefer_directory: bool) -> PathBuf {
     let candidate = PathBuf::from(raw.trim());
-    if candidate.extension().is_some() {
+    let raw = raw.trim();
+    let ends_with_separator = raw.ends_with(std::path::MAIN_SEPARATOR)
+        || raw.ends_with('/')
+        || raw.ends_with('\\');
+    let looks_like_directory =
+        prefer_directory || ends_with_separator || candidate.as_path().is_dir() || candidate.file_name().is_none();
+
+    if !looks_like_directory {
         return candidate;
     }
 
@@ -211,10 +216,10 @@ fn normalized_download_target(raw: &str, url: &str) -> PathBuf {
 fn normalize_output_path(raw: &str, settings: &AppSettings, url: &str) -> PathBuf {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return normalized_download_target(&settings.general.default_download_path, url);
+        return normalized_download_target(&settings.general.default_download_path, url, true);
     }
 
-    normalized_download_target(trimmed, url)
+    normalized_download_target(trimmed, url, false)
 }
 
 fn status_label(status: DownloadStatus) -> &'static str {
@@ -285,6 +290,55 @@ fn request_with_settings(mut request: StartDownloadRequest, settings: &AppSettin
         request.bytes_per_sec = settings.performance.bandwidth_cap;
     }
     request
+}
+
+fn is_scheduler_window_open(settings: &AppSettings) -> bool {
+    if !settings.scheduler.enabled {
+        return true;
+    }
+
+    let hour = Local::now().hour() as u8;
+    let start = settings.scheduler.start_hour.min(23);
+    let end = settings.scheduler.end_hour.min(23);
+
+    if start <= end {
+        (start..=end).contains(&hour)
+    } else {
+        hour >= start || hour <= end
+    }
+}
+
+fn configured_proxy_url(settings: &AppSettings) -> Option<String> {
+    if !settings.proxy.enabled {
+        return None;
+    }
+
+    let trimmed = settings.proxy.url.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn cleanup_download_file(path: &str) -> Result<(), String> {
+    let target = Path::new(path);
+    if !target.exists() {
+        return Ok(());
+    }
+
+    std::fs::remove_file(target).map_err(|e| format!("failed to remove '{}': {e}", target.display()))
+}
+
+async fn cleanup_download_file_for_id(pool: &SqlitePool, id: &str) -> Result<(), String> {
+    if let Some(row) = db::get_download(pool, id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        cleanup_download_file(&row.file_path)?;
+    }
+
+    Ok(())
 }
 
 async fn refresh_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
@@ -360,6 +414,14 @@ async fn promote_pending_downloads_with_parts(
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
 ) -> Result<(), String> {
+    let scheduler_open = {
+        let snapshot = settings.lock().await.clone();
+        is_scheduler_window_open(&snapshot)
+    };
+    if !scheduler_open {
+        return Ok(());
+    }
+
     loop {
         let max_concurrent = settings.lock().await.general.max_concurrent as usize;
         let active_ids: HashSet<String> = {
@@ -440,9 +502,18 @@ async fn start_or_queue_download(
 ) -> Result<DownloadListItem, String> {
     let settings_snapshot = settings.lock().await.clone();
     let request = request_with_settings(request, &settings_snapshot);
+    let output_path = normalize_output_path(&request.file_path, &settings_snapshot, &request.url);
+    let output_path_string = output_path.to_string_lossy().to_string();
+    let requested_id = download_id_for(&request.url, &output_path_string);
     let max_concurrent = settings_snapshot.general.max_concurrent as usize;
 
-    if active.lock().await.len() >= max_concurrent {
+    if active.lock().await.contains_key(&requested_id) {
+        return refresh_download_snapshot(&pool, &requested_id)
+            .await?
+            .ok_or_else(|| format!("download already active: {requested_id}"));
+    }
+
+    if !is_scheduler_window_open(&settings_snapshot) || active.lock().await.len() >= max_concurrent {
         let snapshot = persist_queued_download(&pool, &request, &settings_snapshot).await?;
         emit_queue_updated(&app, &pool).await?;
         return Ok(snapshot);
@@ -502,6 +573,7 @@ async fn start_managed_download(
     config.throttle = ThrottleConfig {
         bytes_per_sec: request.bytes_per_sec,
     };
+    config.proxy_url = configured_proxy_url(&settings_snapshot);
 
     let handle = spawn_download(config, pool.clone());
     let id = handle.id().to_string();
@@ -542,7 +614,10 @@ async fn start_managed_download(
             if is_terminal {
                 active_for_task.lock().await.remove(&id_for_task);
                 if cancelled_for_task.lock().await.remove(&snapshot.id) {
-                    let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
+                    if matches!(snapshot.status, DownloadStatus::Paused) {
+                        let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
+                        let _ = cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
+                    }
                 }
                 let _ = refresh_download_snapshot(&pool_for_task, &snapshot.id).await;
                 let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
@@ -805,6 +880,7 @@ async fn cancel_download(
     db::set_download_cancelled(&state.pool, &id)
         .await
         .map_err(|e| e.to_string())?;
+    cleanup_download_file_for_id(&state.pool, &id).await?;
     let _ = emit_queue_updated(&app, &state.pool).await;
     Ok(())
 }
@@ -819,6 +895,7 @@ async fn remove_download(
         return Err(format!("cannot remove active download: {id}"));
     }
 
+    cleanup_download_file_for_id(&state.pool, &id).await?;
     db::delete_download(&state.pool, &id)
         .await
         .map_err(|e| e.to_string())?;
@@ -921,6 +998,11 @@ pub fn run() {
             .await
             .expect("failed to run Khukri migrations");
 
+        sqlx::query("UPDATE downloads SET status = 'paused' WHERE status = 'active'")
+            .execute(&pool)
+            .await
+            .expect("failed to reset stale active downloads");
+
         let settings = load_settings_from_disk();
         save_settings_to_disk(&settings).expect("failed to save Khukri app settings");
 
@@ -938,6 +1020,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
                     let _ = promote_pending_downloads(&app_handle, &state).await;
+                });
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(SCHEDULER_POLL_INTERVAL).await;
+                        let state = app_handle.state::<AppState>();
+                        if state.quitting.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let _ = promote_pending_downloads(&app_handle, &state).await;
+                    }
                 });
                 Ok(())
             })

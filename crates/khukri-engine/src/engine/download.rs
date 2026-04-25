@@ -107,12 +107,16 @@ struct ProgressState {
 }
 
 impl ProgressState {
-    fn new(tx: watch::Sender<DownloadProgress>) -> Self {
+    fn new(
+        tx: watch::Sender<DownloadProgress>,
+        initial_bytes_done: u64,
+        initial_segments_done: u32,
+    ) -> Self {
         Self {
             tx,
             started_at: Instant::now(),
-            bytes_done: Arc::new(AtomicU64::new(0)),
-            segments_done: Arc::new(AtomicU32::new(0)),
+            bytes_done: Arc::new(AtomicU64::new(initial_bytes_done)),
+            segments_done: Arc::new(AtomicU32::new(initial_segments_done)),
             segments_total: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -227,19 +231,41 @@ async fn start_download_internal(
     progress_tx: Option<watch::Sender<DownloadProgress>>,
 ) -> Result<()> {
     config.validate()?;
-    let custom_headers = Arc::new(build_header_map(&config.custom_headers)?);
-    let client = Arc::new(
-        Client::builder()
-            .connect_timeout(Duration::from_secs(15))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(16)
-            .tcp_keepalive(Duration::from_secs(30))
-            .user_agent("khukri-engine/0.1")
-            .http2_adaptive_window(true)
-            .build()?,
-    );
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let download_id = download_id_for(&config);
-    let progress = progress_tx.map(ProgressState::new);
+
+    db::upsert_download(
+        &pool,
+        &download_id,
+        &config.url,
+        &config.file_path.to_string_lossy(),
+        None,
+        config.priority.as_str(),
+        config.throttle.bytes_per_sec,
+        now,
+    )
+    .await?;
+
+    let custom_headers = Arc::new(build_header_map(&config.custom_headers)?);
+    let mut client_builder = Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .pool_max_idle_per_host(16)
+        .tcp_keepalive(Duration::from_secs(30))
+        .user_agent("khukri-engine/0.1")
+        .http2_adaptive_window(true);
+    if let Some(proxy_url) = &config.proxy_url {
+        let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| KhukriError::InvalidConfig {
+            field: "proxy_url",
+            reason: format!("invalid proxy URL: {e}"),
+        })?;
+        client_builder = client_builder.proxy(proxy);
+    }
+    let client = Arc::new(client_builder.build()?);
+    let progress = progress_tx.map(|tx| ProgressState::new(tx, 0, 0));
 
     if cancel.is_cancelled() {
         db::set_download_status(&pool, &download_id, "paused")
@@ -254,7 +280,7 @@ async fn start_download_internal(
     // ── 1. HEAD: probe Content-Length + Accept-Ranges (with retry) ──────────
     // Status check is inside the closure so 5xx triggers a retry,
     // while permanent errors (403, 404) surface immediately.
-    let head = with_retry(&config.retry, || {
+    let head = match with_retry(&config.retry, || {
         let client = client.clone();
         let custom_headers = custom_headers.clone();
         let url = config.url.clone();
@@ -276,7 +302,17 @@ async fn start_download_internal(
             Ok(resp)
         }
     })
-    .await?;
+    .await {
+        Ok(head) => head,
+        Err(e) => {
+            db::set_download_failed(&pool, &download_id, &e.to_string())
+                .await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Failed);
+            }
+            return Err(e);
+        }
+    };
 
     let total_bytes = head
         .headers()
@@ -300,11 +336,6 @@ async fn start_download_internal(
     );
 
     // ── 2. Persist download record ────────────────────────────────────────────
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
     db::upsert_download(
         &pool,
         &download_id,
@@ -312,19 +343,27 @@ async fn start_download_internal(
         &config.file_path.to_string_lossy(),
         total_bytes,
         config.priority.as_str(),
+        config.throttle.bytes_per_sec,
         now,
     )
     .await?;
+
+    // ── 3. Prepare output directory ───────────────────────────────────────────
+    if let Some(parent) = config.file_path.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            db::set_download_failed(&pool, &download_id, &e.to_string())
+                .await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Failed);
+            }
+            return Err(e.into());
+        }
+    }
 
     db::set_download_status(&pool, &download_id, "active").await?;
     if let Some(p) = &progress {
         p.set_totals(total_bytes, None);
         p.set_status(DownloadStatus::Active);
-    }
-
-    // ── 3. Prepare output directory ───────────────────────────────────────────
-    if let Some(parent) = config.file_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
     }
 
     // ── 4. Route: segmented vs streaming ─────────────────────────────────────
@@ -399,7 +438,8 @@ async fn start_download_internal(
             Err(KhukriError::Cancelled)
         }
         Err(e) => {
-            db::set_download_status(&pool, &download_id, "failed").await?;
+            db::set_download_failed(&pool, &download_id, &e.to_string())
+                .await?;
             if let Some(p) = &progress {
                 p.set_status(DownloadStatus::Failed);
             }
@@ -438,10 +478,28 @@ async fn segmented_download(
 
     let existing = db::get_all_segments(pool, download_id).await?;
     let resume_mode = can_reuse_segments(&existing, &seg_pairs);
+    let completed_bytes = existing
+        .iter()
+        .filter(|row| row.completed != 0)
+        .map(segment_len)
+        .sum::<u64>();
+    let completed_segments = existing
+        .iter()
+        .filter(|row| row.completed != 0)
+        .count() as u32;
 
     if !resume_mode {
         db::delete_segments(pool, download_id).await?;
         db::insert_segments(pool, download_id, &seg_pairs).await?;
+    }
+
+    if resume_mode {
+        if let Some(p) = &progress {
+            p.bytes_done.store(completed_bytes, Ordering::Relaxed);
+            p.segments_done
+                .store(completed_segments, Ordering::Relaxed);
+            p.emit(DownloadStatus::Active);
+        }
     }
 
     let file = OpenOptions::new()
@@ -816,4 +874,10 @@ fn can_reuse_segments(existing: &[db::SegmentRow], expected: &[(u64, u64)]) -> b
         .iter()
         .zip(expected.iter())
         .all(|(row, (start, end))| row.start_byte as u64 == *start && row.end_byte as u64 == *end)
+}
+
+fn segment_len(row: &db::SegmentRow) -> u64 {
+    let start = row.start_byte.max(0) as u64;
+    let end = row.end_byte.max(row.start_byte) as u64;
+    end.saturating_sub(start).saturating_add(1)
 }
