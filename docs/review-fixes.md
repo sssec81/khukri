@@ -1,7 +1,7 @@
 # Khukri — Code Review Fix Tracker
 
-> Review date: 2026-04-26  
-> Source: structured codebase review (B+ grade)
+> Review date: 2026-04-26 (updated)  
+> Source: structured codebase review — initial grade B+, updated grade A-
 
 Legend: ✅ Fixed · ❌ Not Fixed · ⚠️ Partial
 
@@ -13,13 +13,26 @@ Legend: ✅ Fixed · ❌ Not Fixed · ⚠️ Partial
 |---|-------|--------|------|-------|
 | 1 | Commit `Cargo.lock` | ❌ Not Fixed | `.gitignore:3` | `Cargo.lock` is explicitly gitignored — must be committed for binary crates to ensure reproducible builds |
 | 2 | `allowed_root` canonicalize on non-existent parent | ✅ Fixed | `crates/khukri-engine/src/config.rs` | Added `canonicalize_with_nonexistent_tail` helper that walks up to the deepest existing ancestor before canonicalizing |
-| 3 | Symlink traversal test | ✅ Fixed | `crates/khukri-engine/src/config.rs` | Added `test_validate_rejects_symlink_escape` (gated `#[cfg(unix)]`) and `test_validate_accepts_nonexistent_output_file_inside_root` |
+| 3 | Symlink traversal test | ✅ Fixed | `crates/khukri-engine/src/config.rs` | Added `test_validate_rejects_symlink_escape` (`#[cfg(unix)]`), `test_validate_rejects_symlink_escape_windows` (`#[cfg(windows)]`, skips if no symlink privilege), and `test_validate_accepts_nonexistent_output_file_inside_root` |
 | 4 | Bridge SQLite WAL + busy timeout | ✅ Fixed | `crates/khukri-bridge/src/main.rs` | Added `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout = 5000` after pool connect |
 | 5 | Replace `wait_for_download_snapshot` polling | ✅ Fixed | `src-tauri/src/main.rs` | Replaced 80×100 ms polling loop with a single DB read; call site already has a synthesized fallback for `None` |
 | 6 | Scope extension `host_permissions` | ✅ Fixed | `extension/manifest.json`, `extension/service-worker.js` | Moved `<all_urls>` to `optional_host_permissions`; added `scripting` permission; content scripts now registered dynamically via `chrome.scripting`; permission requested on action click (user gesture required by Chrome) |
 | 7 | Content script isolation (`world: ISOLATED`) | ✅ Fixed | `extension/content-script-main.js` (new), `extension/content-script.js` | Fetch/XHR patching moved to new `content-script-main.js` (world: MAIN); `content-script.js` is now a pure ISOLATED relay that listens to `window.postMessage` and forwards to `chrome.runtime.sendMessage` |
 | 8 | `innerHTML` in `blade-ui.js` | ✅ Fixed | `extension/blade-ui.js` | Replaced with `document.createElement` chain; SVG icons still set via `innerHTML` (hardcoded, no user data) |
 | 9 | Bridge missing WAL mode (duplicate of #4) | ✅ Fixed | `crates/khukri-bridge/src/main.rs` | Covered by fix #4 |
+
+---
+
+## Round-2 Fixes (from A- review)
+
+| # | Issue | Status | File | Notes |
+|---|-------|--------|------|-------|
+| R1 | `fetch`/XHR fingerprinting in `content-script-main.js` | ✅ Fixed | `extension/content-script-main.js` | Switched to `Proxy`-based wrapping so `window.fetch.toString()` and `.name` return native values |
+| R2 | `recentRequests` Map grows unbounded | ✅ Fixed | `extension/service-worker.js` | Added `isDuplicateRequest` helper with TTL eviction + 500-entry cap (oldest-first trim) |
+| R3 | Windows symlink test missing | ✅ Fixed | `crates/khukri-engine/src/config.rs` | Added `#[cfg(windows)]` test; skips gracefully if symlink creation requires elevation |
+| R4 | `pause_all_downloads` N+1 queries | ✅ Fixed | `src-tauri/src/main.rs`, `crates/khukri-engine/src/db/mod.rs` | Added `db::set_download_status_where` for single atomic UPDATE; `pause_all_downloads` now one query |
+| R5 | `filename_from_url` keeps `#fragment` in filename | ✅ Fixed | `crates/khukri-bridge/src/main.rs` | Strip `#` before extracting last path segment; two new tests added |
+| R6 | `chrome.action.setBadgeText` fires on every message | ✅ Fixed | `extension/service-worker.js` | `badgeSet` flag per-port; only sets badge once per native port connection |
 
 ---
 
@@ -59,6 +72,7 @@ Legend: ✅ Fixed · ❌ Not Fixed · ⚠️ Partial
 
 | Date | # | Action |
 |------|---|--------|
+| 2026-04-26 | R1–R6 | fetch Proxy fingerprint fix, recentRequests cap, Windows symlink test, batch pause_all_downloads, fragment strip in filename_from_url, badge debounce |
 | 2026-04-26 | 6 | `<all_urls>` moved to `optional_host_permissions`; dynamic content script registration; permission requested on action click |
 | 2026-04-26 | 7 | Created `content-script-main.js` (MAIN world); `content-script.js` rewritten as isolated-world postMessage relay |
 | 2026-04-26 | 2, 3 | `canonicalize_with_nonexistent_tail` helper + two new tests in `config.rs` |

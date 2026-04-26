@@ -142,7 +142,11 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 fn filename_from_url(url: &str) -> String {
-    let trimmed = url.split('?').next().unwrap_or(url).trim_end_matches('/');
+    // Strip query string and fragment before extracting the filename.
+    let trimmed = url
+        .split('?').next().unwrap_or(url)
+        .split('#').next().unwrap_or(url)
+        .trim_end_matches('/');
     let path_part = match trimmed.split_once("://") {
         Some((_, remainder)) => match remainder.split_once('/') {
             Some((_, path)) => path,
@@ -444,6 +448,16 @@ mod tests {
     #[test]
     fn filename_from_url_trailing_slash() {
         assert_eq!(filename_from_url("https://example.com/"), "download.bin");
+    }
+
+    #[test]
+    fn filename_from_url_strips_fragment() {
+        assert_eq!(filename_from_url("https://example.com/file.zip#section"), "file.zip");
+    }
+
+    #[test]
+    fn filename_from_url_strips_query_and_fragment() {
+        assert_eq!(filename_from_url("https://example.com/file.zip?token=abc#anchor"), "file.zip");
     }
 }
 

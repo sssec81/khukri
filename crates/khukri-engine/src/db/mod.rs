@@ -131,6 +131,29 @@ pub async fn set_download_status(pool: &SqlitePool, id: &str, status: &str) -> R
     Ok(())
 }
 
+/// Atomically move all downloads whose current status is in `from_statuses`
+/// to `to_status` in a single UPDATE statement.
+pub async fn set_download_status_where(
+    pool: &SqlitePool,
+    from_statuses: &[&str],
+    to_status: &str,
+) -> Result<()> {
+    if from_statuses.is_empty() {
+        return Ok(());
+    }
+    // Build `IN (?, ?, ...)` — sqlx doesn't support slice binding directly.
+    let placeholders = from_statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "UPDATE downloads SET status = ?, failure_reason = NULL WHERE status IN ({placeholders})"
+    );
+    let mut query = sqlx::query(&sql).bind(to_status);
+    for s in from_statuses {
+        query = query.bind(*s);
+    }
+    query.execute(pool).await?;
+    Ok(())
+}
+
 pub async fn get_download(pool: &SqlitePool, id: &str) -> Result<Option<DownloadRow>> {
     let row = sqlx::query_as::<_, DownloadRow>("SELECT * FROM downloads WHERE id = ?")
         .bind(id)

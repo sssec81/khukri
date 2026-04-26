@@ -5,6 +5,8 @@ let nativePort = null;
 let lastDisconnectTime = 0;
 const RECONNECT_BACKOFF_MS = 1000; // Wait 1 second before retrying after disconnect
 const recentRequests = new Map();
+const RECENT_REQUESTS_MAX = 500;
+const RECENT_REQUESTS_TTL_MS = 4000;
 const latestStreamByTab = new Map();
 
 function isTargetStream(url) {
@@ -36,9 +38,11 @@ function ensureNativePort() {
 
     try {
         nativePort = chrome.runtime.connectNative(HOST_NAME);
+        let badgeSet = false;
         nativePort.onMessage.addListener((message) => {
             if (!message || !message.id) return;
-            if (message.output_path) {
+            if (message.output_path && !badgeSet) {
+                badgeSet = true;
                 chrome.action.setBadgeText({ text: 'KH' });
             }
         });
@@ -74,6 +78,29 @@ function sendToNative(payload) {
 
 function dedupeKey(details) {
     return `${details.tabId}:${details.url}`;
+}
+
+// Returns true if the request is a duplicate within the TTL window.
+// Also evicts entries that are older than the TTL and trims the map to
+// RECENT_REQUESTS_MAX entries (oldest-first) to bound memory usage.
+function isDuplicateRequest(key) {
+    const now = Date.now();
+    const last = recentRequests.get(key);
+    if (last !== undefined && now - last < RECENT_REQUESTS_TTL_MS) {
+        return true;
+    }
+
+    // Evict expired entries, then trim to size cap.
+    for (const [k, ts] of recentRequests) {
+        if (now - ts >= RECENT_REQUESTS_TTL_MS) recentRequests.delete(k);
+    }
+    if (recentRequests.size >= RECENT_REQUESTS_MAX) {
+        // Delete the oldest entry (Maps iterate insertion order).
+        recentRequests.delete(recentRequests.keys().next().value);
+    }
+
+    recentRequests.set(key, now);
+    return false;
 }
 
 function scoreStreamCandidate(url) {
@@ -165,10 +192,7 @@ chrome.webRequest.onBeforeRequest.addListener(
     (details) => {
         if (!isTargetStream(details.url)) return;
 
-        const key = dedupeKey(details);
-        const now = Date.now();
-        if (recentRequests.has(key) && now - recentRequests.get(key) < 4000) return;
-        recentRequests.set(key, now);
+        if (isDuplicateRequest(dedupeKey(details))) return;
 
         const payload = {
             type: 'queue_download',

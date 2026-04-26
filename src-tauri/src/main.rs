@@ -695,14 +695,9 @@ async fn pause_all_downloads(app: &tauri::AppHandle, state: &AppState) -> Result
         download.handle.lock().await.cancel();
     }
 
-    let rows = db::list_downloads(&state.pool).await.map_err(|e| e.to_string())?;
-    for row in rows {
-        if row.status == "active" || row.status == "queued" {
-            db::set_download_status(&state.pool, &row.id, "paused")
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    db::set_download_status_where(&state.pool, &["active", "queued"], "paused")
+        .await
+        .map_err(|e| e.to_string())?;
 
     emit_queue_updated(app, &state.pool).await?;
     Ok(())

@@ -27,17 +27,27 @@
     }
 
     const originalFetch = window.fetch;
-    window.fetch = async function (...args) {
-        const response = await originalFetch.apply(this, args);
-        try {
-            maybeEmit(response.url || args[0]?.url || args[0], { method: 'fetch' });
-        } catch {}
-        return response;
-    };
+    // Use a Proxy so sites that check fetch.toString() or fetch.name still
+    // see the native function — avoids fingerprinting detection.
+    window.fetch = new Proxy(originalFetch, {
+        apply(target, thisArg, args) {
+            const result = Reflect.apply(target, thisArg, args);
+            result.then((response) => {
+                try {
+                    maybeEmit(response.url || args[0]?.url || args[0], { method: 'fetch' });
+                } catch {}
+            }).catch(() => {});
+            return result;
+        },
+    });
 
     const originalOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-        maybeEmit(url, { method: 'xhr' });
-        return originalOpen.call(this, method, url, ...rest);
-    };
+    XMLHttpRequest.prototype.open = new Proxy(originalOpen, {
+        apply(target, thisArg, args) {
+            try {
+                maybeEmit(args[1], { method: 'xhr' });
+            } catch {}
+            return Reflect.apply(target, thisArg, args);
+        },
+    });
 })();

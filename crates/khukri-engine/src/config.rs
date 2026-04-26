@@ -312,6 +312,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_validate_rejects_symlink_escape_windows() {
+        use std::os::windows::fs::symlink_dir;
+
+        let stamp = format!(
+            "khukri_cfg_symlink_win_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(format!("{stamp}_root"));
+        let outside = std::env::temp_dir().join(format!("{stamp}_outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let link = root.join("escape");
+        // Requires Developer Mode or elevated privileges on Windows.
+        if symlink_dir(&outside, &link).is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+            let _ = std::fs::remove_dir_all(&outside);
+            return; // Skip if symlink creation is not permitted.
+        }
+
+        let mut cfg =
+            DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
+        cfg.allowed_root = Some(root.clone());
+
+        let result = cfg.validate();
+        assert!(
+            matches!(
+                result,
+                Err(KhukriError::InvalidConfig { field: "file_path", .. })
+            ),
+            "Windows symlink escape should be rejected, got: {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_validate_rejects_symlink_escape() {
