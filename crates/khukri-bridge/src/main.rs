@@ -240,6 +240,11 @@ async fn make_pool() -> Result<sqlx::SqlitePool> {
         .max_connections(1)
         .connect(&sqlite_url(&db_path))
         .await?;
+    // Match the WAL + busy-timeout settings used by the Tauri app so that
+    // concurrent access between the bridge and the desktop app doesn't cause
+    // "database is locked" errors.
+    sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
+    sqlx::query("PRAGMA busy_timeout = 5000").execute(&pool).await?;
     db::run_migrations(&pool).await?;
     Ok(pool)
 }

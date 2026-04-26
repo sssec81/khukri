@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fs;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use reqwest::header::{HeaderName, HeaderValue};
 
@@ -73,6 +74,52 @@ impl Default for RetryConfig {
     }
 }
 
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+/// Canonicalize `path` by resolving the deepest existing ancestor, then
+/// re-appending any non-existent tail components verbatim.
+///
+/// This lets us safely check containment even when the output file or its
+/// parent directory hasn't been created yet, while still resolving any
+/// symlinks that do exist on the path.
+fn canonicalize_with_nonexistent_tail(path: &Path) -> io::Result<PathBuf> {
+    // Accumulate non-existent tail components (in reverse order).
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cursor = path.to_path_buf();
+
+    loop {
+        if cursor.exists() {
+            let mut canonical = fs::canonicalize(&cursor)?;
+            for component in tail.into_iter().rev() {
+                canonical.push(component);
+            }
+            return Ok(canonical);
+        }
+
+        // Pop the last component; error if we run out of path.
+        let name = cursor
+            .file_name()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no existing ancestor found for output path",
+                )
+            })?
+            .to_os_string();
+
+        tail.push(name);
+        cursor = cursor
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "no existing ancestor found for output path",
+                )
+            })?;
+    }
+}
+
 // ── DownloadConfig ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -126,30 +173,17 @@ impl DownloadConfig {
                     reason: format!("cannot canonicalize allowed root: {e}"),
                 })?;
 
-            let target_base = if self.file_path.exists() {
-                self.file_path.clone()
-            } else {
-                self.file_path.parent().map(PathBuf::from).ok_or_else(|| {
+            // Canonicalize only the deepest existing ancestor so validation
+            // succeeds even when the output file (or its parent) doesn't exist
+            // yet. Symlinks in the existing prefix are resolved, preventing
+            // traversal via symlink chains.
+            let canonical_target =
+                canonicalize_with_nonexistent_tail(&self.file_path).map_err(|e| {
                     KhukriError::InvalidConfig {
                         field: "file_path",
-                        reason: "output path must have a parent directory".to_string(),
+                        reason: format!("cannot resolve output path: {e}"),
                     }
-                })?
-            };
-
-            let canonical_target_base =
-                fs::canonicalize(&target_base).map_err(|e| KhukriError::InvalidConfig {
-                    field: "file_path",
-                    reason: format!("cannot canonicalize output base path: {e}"),
                 })?;
-
-            let canonical_target = if self.file_path.exists() {
-                canonical_target_base
-            } else if let Some(name) = self.file_path.file_name() {
-                canonical_target_base.join(name)
-            } else {
-                canonical_target_base
-            };
 
             if !canonical_target.starts_with(&canonical_root) {
                 return Err(KhukriError::InvalidConfig {
@@ -250,6 +284,67 @@ mod tests {
                 ..
             })
         ));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn test_validate_accepts_nonexistent_output_file_inside_root() {
+        let stamp = format!(
+            "khukri_cfg_nonexistent_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(format!("{stamp}_root"));
+        std::fs::create_dir_all(&root).unwrap();
+
+        // The file itself does not exist — only the root directory does.
+        let mut cfg =
+            DownloadConfig::new("https://example.com/file.bin", root.join("subdir").join("file.bin"));
+        cfg.allowed_root = Some(root.clone());
+
+        // Should not error even though neither subdir/ nor file.bin exist.
+        assert!(cfg.validate().is_ok(), "validation failed for non-existent nested path inside root");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let stamp = format!(
+            "khukri_cfg_symlink_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(format!("{stamp}_root"));
+        let outside = std::env::temp_dir().join(format!("{stamp}_outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // Create a symlink inside root/ that points outside root/.
+        let link = root.join("escape");
+        symlink(&outside, &link).unwrap();
+
+        let mut cfg =
+            DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
+        cfg.allowed_root = Some(root.clone());
+
+        let result = cfg.validate();
+        assert!(
+            matches!(
+                result,
+                Err(KhukriError::InvalidConfig { field: "file_path", .. })
+            ),
+            "symlink escape should be rejected, got: {result:?}"
+        );
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(outside);

@@ -249,19 +249,43 @@
             pill.setAttribute('role', 'button');
             pill.setAttribute('tabindex', '0');
             pill.setAttribute('aria-label', 'Download this video with Khukri');
-            pill.innerHTML = `
-                <div class="kh-icon-zone">
-                    <div class="kh-icon-circle">${ICON_DOWNLOAD}</div>
-                </div>
-                <div class="kh-content">
-                    <div class="kh-title">Download <span class="kh-brand">Khukri</span></div>
-                    <div class="kh-sub">HD · MP4 READY</div>
-                </div>
-                <div class="kh-sep"></div>
-                <button class="kh-close" title="Dismiss" aria-label="Dismiss">${ICON_CLOSE}</button>
-            `;
+            const iconZone = document.createElement('div');
+            iconZone.className = 'kh-icon-zone';
+            const iconCircle = document.createElement('div');
+            iconCircle.className = 'kh-icon-circle';
+            iconCircle.innerHTML = ICON_DOWNLOAD;
+            iconZone.appendChild(iconCircle);
 
-            pill.querySelector('.kh-close').addEventListener('click', (event) => {
+            const content = document.createElement('div');
+            content.className = 'kh-content';
+            const title = document.createElement('div');
+            title.className = 'kh-title';
+            title.appendChild(document.createTextNode('Download '));
+            const brand = document.createElement('span');
+            brand.className = 'kh-brand';
+            brand.textContent = 'Khukri';
+            title.appendChild(brand);
+            const sub = document.createElement('div');
+            sub.className = 'kh-sub';
+            sub.textContent = 'HD \xB7 MP4 READY';
+            content.appendChild(title);
+            content.appendChild(sub);
+
+            const sep = document.createElement('div');
+            sep.className = 'kh-sep';
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'kh-close';
+            closeBtn.title = 'Dismiss';
+            closeBtn.setAttribute('aria-label', 'Dismiss');
+            closeBtn.innerHTML = ICON_CLOSE;
+
+            pill.appendChild(iconZone);
+            pill.appendChild(content);
+            pill.appendChild(sep);
+            pill.appendChild(closeBtn);
+
+            closeBtn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 dismiss(pill, origin);
             });

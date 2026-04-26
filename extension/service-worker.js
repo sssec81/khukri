@@ -250,8 +250,101 @@ function resetDismissedSites() {
     chrome.storage.local.remove('dismissed_sites');
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+// Content scripts are registered dynamically so that <all_urls> can be an
+// optional (user-grantable) host permission rather than a mandatory one.
+// Chrome fires the webRequest listener only for origins where permission has
+// been granted, so no extra guarding is needed there.
+const CONTENT_SCRIPT_REGISTRATIONS = [
+    {
+        id: 'khukri-main-world',
+        matches: ['<all_urls>'],
+        js: ['content-script-main.js'],
+        runAt: 'document_start',
+        world: 'MAIN',
+    },
+    {
+        id: 'khukri-isolated',
+        matches: ['<all_urls>'],
+        js: ['content-script.js'],
+        runAt: 'document_idle',
+        allFrames: true,
+        world: 'ISOLATED',
+    },
+    {
+        id: 'khukri-blade',
+        matches: ['<all_urls>'],
+        js: ['blade-ui.js'],
+        runAt: 'document_idle',
+        allFrames: true,
+        world: 'ISOLATED',
+    },
+];
+
+async function registerContentScripts() {
+    try {
+        // Unregister stale entries before re-registering so updates apply cleanly.
+        const existing = await chrome.scripting.getRegisteredContentScripts();
+        const existingIds = existing.map((s) => s.id);
+        const toUnregister = CONTENT_SCRIPT_REGISTRATIONS
+            .map((s) => s.id)
+            .filter((id) => existingIds.includes(id));
+
+        if (toUnregister.length > 0) {
+            await chrome.scripting.unregisterContentScripts({ ids: toUnregister });
+        }
+
+        await chrome.scripting.registerContentScripts(CONTENT_SCRIPT_REGISTRATIONS);
+    } catch (e) {
+        console.error('Khukri: failed to register content scripts:', e);
+    }
+}
+
+async function unregisterContentScripts() {
+    try {
+        const ids = CONTENT_SCRIPT_REGISTRATIONS.map((s) => s.id);
+        await chrome.scripting.unregisterContentScripts({ ids });
+    } catch {}
+}
+
+// Re-register scripts whenever <all_urls> is granted (e.g. after first-run
+// permission prompt or after a user re-grants a previously revoked permission).
+chrome.permissions.onAdded.addListener(async (permissions) => {
+    if (permissions.origins && permissions.origins.includes('<all_urls>')) {
+        await registerContentScripts();
+    }
+});
+
+// Remove scripts when the broad permission is revoked so we don't leave
+// stale registrations that would fail silently.
+chrome.permissions.onRemoved.addListener(async (permissions) => {
+    if (permissions.origins && permissions.origins.includes('<all_urls>')) {
+        await unregisterContentScripts();
+    }
+});
+
+// On action click: request <all_urls> if not yet granted (requires a user
+// gesture — this is the only valid place to call permissions.request in MV3).
+chrome.action.onClicked.addListener(async () => {
+    const already = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    if (!already) {
+        const granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
+        if (granted) {
+            await registerContentScripts();
+        }
+        return;
+    }
+    // If permission already granted, ensure scripts are registered (idempotent).
+    await registerContentScripts();
+});
+
+chrome.runtime.onInstalled.addListener(async () => {
     resetDismissedSites();
+    // If the user already granted <all_urls> (e.g. extension update path),
+    // register content scripts immediately.
+    const has = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    if (has) {
+        await registerContentScripts();
+    }
 });
 
 chrome.runtime.onStartup.addListener(() => {

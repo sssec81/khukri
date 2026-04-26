@@ -356,16 +356,11 @@ async fn refresh_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option
 }
 
 async fn wait_for_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
-    for _ in 0..80 {
-        let snapshot = refresh_download_snapshot(pool, id).await?;
-        if snapshot.is_some() {
-            return Ok(snapshot);
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-
-    Ok(None)
+    // A single read is sufficient: start_managed_download constructs the DB
+    // row before spawning the progress task, so the row is available
+    // immediately. The call site already has a synthesized fallback for the
+    // None case, so there is no need to poll.
+    refresh_download_snapshot(pool, id).await
 }
 
 async fn emit_queue_updated(app: &tauri::AppHandle, pool: &SqlitePool) -> Result<(), String> {
