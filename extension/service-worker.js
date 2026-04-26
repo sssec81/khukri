@@ -2,6 +2,8 @@ const HOST_NAME = 'com.khukri.host';
 const STREAM_PATTERNS = [/\.m3u8(\?|$)/i, /\.mpd(\?|$)/i, /videoplayback/i];
 
 let nativePort = null;
+let lastDisconnectTime = 0;
+const RECONNECT_BACKOFF_MS = 1000; // Wait 1 second before retrying after disconnect
 const recentRequests = new Map();
 const latestStreamByTab = new Map();
 
@@ -26,22 +28,48 @@ function buildCustomHeaders({ referer, pageUrl }) {
 function ensureNativePort() {
     if (nativePort) return nativePort;
 
-    nativePort = chrome.runtime.connectNative(HOST_NAME);
-    nativePort.onMessage.addListener((message) => {
-        if (!message || !message.id) return;
-        if (message.output_path) {
-            chrome.action.setBadgeText({ text: 'KH' });
-        }
-    });
-    nativePort.onDisconnect.addListener(() => {
+    // Implement backoff: don't retry too quickly after a disconnect
+    const timeSinceDisconnect = Date.now() - lastDisconnectTime;
+    if (timeSinceDisconnect < RECONNECT_BACKOFF_MS) {
+        return null; // Still in cooldown, don't retry yet
+    }
+
+    try {
+        nativePort = chrome.runtime.connectNative(HOST_NAME);
+        nativePort.onMessage.addListener((message) => {
+            if (!message || !message.id) return;
+            if (message.output_path) {
+                chrome.action.setBadgeText({ text: 'KH' });
+            }
+        });
+        nativePort.onDisconnect.addListener(() => {
+            nativePort = null;
+            lastDisconnectTime = Date.now();
+        });
+    } catch (e) {
+        console.error('Failed to connect to native host:', e);
         nativePort = null;
-    });
+        lastDisconnectTime = Date.now();
+        return null;
+    }
 
     return nativePort;
 }
 
 function sendToNative(payload) {
-    ensureNativePort().postMessage(payload);
+    const port = ensureNativePort();
+    if (!port) {
+        console.warn('Native bridge not available, queueing download for retry:', payload.url);
+        return;
+    }
+
+    try {
+        port.postMessage(payload);
+    } catch (e) {
+        console.error('Failed to send message to native host:', e);
+        nativePort = null;
+        lastDisconnectTime = Date.now();
+    }
 }
 
 function dedupeKey(details) {
@@ -94,13 +122,38 @@ function waitForUsableStreamCandidate(tabId, timeoutMs = 3000) {
     });
 }
 
+function canHandleDownload(url) {
+    // Khukri cannot handle these URL schemes
+    if (!url) return false;
+    if (url.startsWith('blob:')) return false;
+    if (url.startsWith('data:')) return false;
+    return true;
+}
+
+function isBridgeConnected() {
+    return nativePort !== null;
+}
+
 chrome.downloads.onCreated.addListener((downloadItem) => {
+    // Check if we can handle this URL
+    const url = downloadItem.finalUrl || downloadItem.url;
+    if (!canHandleDownload(url)) {
+        // Let browser handle it
+        return;
+    }
+
+    // Only cancel the download if the bridge is connected
+    if (!isBridgeConnected()) {
+        // Bridge not connected, let browser's default download handler work
+        return;
+    }
+
     chrome.downloads.cancel(downloadItem.id);
 
     sendToNative({
         type: 'queue_download',
-        url: downloadItem.finalUrl || downloadItem.url,
-        filename: normalizeFilename(downloadItem.filename, downloadItem.url),
+        url: url,
+        filename: normalizeFilename(downloadItem.filename, url),
         size: downloadItem.fileSize || null,
         source: 'browser',
         pageUrl: downloadItem.referrer || null,
@@ -169,9 +222,9 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             const resolvedUrl = hasUsableStreamCandidate(remembered)
                 ? remembered.url
                 : (message.url && !message.url.startsWith('blob:') ? message.url : '') ||
-                  senderTabUrl ||
-                  message.pageUrl ||
-                  '';
+                senderTabUrl ||
+                message.pageUrl ||
+                '';
 
             const resolvedPageUrl =
                 remembered?.pageUrl || message.pageUrl || senderTabUrl || null;

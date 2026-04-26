@@ -24,6 +24,7 @@ use crate::error::{KhukriError, Result};
 
 type Bucket = Arc<Mutex<TokenBucket>>;
 const STREAM_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
+const SPEED_WINDOW_SECS: u64 = 10;
 
 fn build_header_map(custom_headers: &[(String, String)]) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -146,10 +147,33 @@ impl ProgressState {
     }
 
     fn emit(&self, status: DownloadStatus) {
+        let started_at = self.started_at;
+        let bytes_done = self.bytes_done.load(Ordering::Relaxed);
+        let segments_done_val = self.segments_done.load(Ordering::Relaxed);
+        let segments_total_val = self.segments_total.load(Ordering::Relaxed);
+        
         self.edit_status(|p| {
-            let bytes_done = self.bytes_done.load(Ordering::Relaxed);
-            let elapsed_secs = self.started_at.elapsed().as_secs_f64().max(0.001);
-            let speed_bps = (bytes_done as f64 / elapsed_secs) as u64;
+            let elapsed_secs = started_at.elapsed().as_secs_f64().max(0.001);
+            let elapsed_ms = (elapsed_secs * 1000.0) as u64;
+            
+            // Use sliding window for speed: calculate speed over last 10 seconds, but at minimum
+            // use at least 1 second of data to avoid spiky measurements
+            let effective_window_ms = if elapsed_ms > SPEED_WINDOW_SECS * 1000 {
+                SPEED_WINDOW_SECS * 1000
+            } else if elapsed_ms > 1000 {
+                elapsed_ms
+            } else {
+                // Within first second, use cumulative
+                elapsed_ms.max(1)
+            };
+            
+            let effective_secs = (effective_window_ms as f64) / 1000.0;
+            let speed_bps = if effective_secs > 0.1 {
+                (bytes_done as f64 / effective_secs) as u64
+            } else {
+                0
+            };
+            
             let eta_seconds = p.total_bytes.and_then(|total| {
                 if speed_bps == 0 || bytes_done >= total {
                     None
@@ -161,12 +185,11 @@ impl ProgressState {
             p.bytes_done = bytes_done;
             p.speed_bps = speed_bps;
             p.eta_seconds = eta_seconds;
-            p.segments_done = self.segments_done.load(Ordering::Relaxed);
-            let seg_total = self.segments_total.load(Ordering::Relaxed);
-            p.segments_total = if seg_total == 0 {
+            p.segments_done = segments_done_val;
+            p.segments_total = if segments_total_val == 0 {
                 None
             } else {
-                Some(seg_total)
+                Some(segments_total_val)
             };
         });
     }
@@ -463,6 +486,7 @@ async fn segmented_download(
     custom_headers: Arc<HeaderMap>,
 ) -> Result<()> {
     let thread_count = resolved_thread_count(total_bytes, config.override_threads);
+    let file_exists = tokio::fs::try_exists(&config.file_path).await?;
 
     info!(thread_count, total_bytes, "Segmented download");
 
@@ -477,7 +501,10 @@ async fn segmented_download(
     }
 
     let existing = db::get_all_segments(pool, download_id).await?;
-    let resume_mode = can_reuse_segments(&existing, &seg_pairs);
+    let stored_version = db::get_segment_formula_version(pool, download_id).await?;
+    let resume_mode = can_reuse_segments(&existing, &seg_pairs)
+        && file_exists
+        && stored_version == Some(SEGMENT_FORMULA_VERSION);
     let completed_bytes = existing
         .iter()
         .filter(|row| row.completed != 0)
@@ -491,6 +518,7 @@ async fn segmented_download(
     if !resume_mode {
         db::delete_segments(pool, download_id).await?;
         db::insert_segments(pool, download_id, &seg_pairs).await?;
+        db::set_segment_formula_version(pool, download_id, SEGMENT_FORMULA_VERSION).await?;
     }
 
     if resume_mode {
@@ -663,6 +691,28 @@ async fn streaming_download(
         return Err(KhukriError::Cancelled);
     }
 
+    let file_exists = tokio::fs::try_exists(&config.file_path).await?;
+
+    // Check if this is a resume of a previous streaming download
+    let existing_segments = db::get_all_segments(pool, download_id).await?;
+    let resume_mode = file_exists && !existing_segments.is_empty();
+    let resumed_bytes = if resume_mode {
+        existing_segments
+            .iter()
+            .filter(|row| row.completed != 0)
+            .map(|s| (s.end_byte as u64).saturating_sub(s.start_byte as u64 - 1))
+            .sum::<u64>()
+    } else {
+        0
+    };
+
+    if resume_mode && !existing_segments.is_empty() {
+        if let Some(p) = &progress {
+            p.bytes_done.store(resumed_bytes, Ordering::Relaxed);
+            p.emit(DownloadStatus::Active);
+        }
+    }
+
     // Status check is inside the closure so 5xx is retried.
     let response = with_retry(&config.retry, || {
         let client = client.clone();
@@ -694,20 +744,27 @@ async fn streaming_download(
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(!resume_mode)
         .open(&config.file_path)
         .await?;
+
+    // Seek to end of file if resuming
+    if resume_mode {
+        file.seek(std::io::SeekFrom::End(0)).await?;
+    }
 
     if let Some(size) = known_size {
         if let Err(e) = preallocate(&file, size).await {
             drop(file);
-            let _ = tokio::fs::remove_file(&config.file_path).await;
+            if !resume_mode {
+                let _ = tokio::fs::remove_file(&config.file_path).await;
+            }
             return Err(e);
         }
     }
 
     let mut stream = response.bytes_stream();
-    let mut written: u64 = 0;
+    let mut written: u64 = resumed_bytes;
 
     loop {
         let next = tokio::time::timeout(STREAM_WATCHDOG_TIMEOUT, stream.next())
@@ -742,8 +799,10 @@ async fn streaming_download(
 
     // Only record a segment if bytes were actually written.
     // written = 0 (empty file) must not insert a bogus (0, 0) row.
-    if written > 0 {
-        db::delete_segments(pool, download_id).await?;
+    if written > resumed_bytes || !resume_mode {
+        if !resume_mode {
+            db::delete_segments(pool, download_id).await?;
+        }
         db::insert_segments(pool, download_id, &[(0, written - 1)]).await?;
         let segs = db::get_incomplete_segments(pool, download_id).await?;
         if let Some(seg) = segs.first() {
@@ -852,17 +911,104 @@ fn download_id_for(config: &DownloadConfig) -> String {
     Uuid::new_v5(&Uuid::NAMESPACE_URL, key.as_bytes()).to_string()
 }
 
-fn resolved_thread_count(total_bytes: u64, override_threads: Option<u8>) -> u8 {
-    let requested = override_threads
-        .unwrap_or_else(|| calc_thread_count(total_bytes))
-        .clamp(1, 64);
+/// Minimum bytes per segment — prevents creating dozens of tiny segments for small files.
+const MIN_SEGMENT_BYTES: u64 = 1024 * 1024; // 1 MiB
 
+/// Bumped whenever `resolved_thread_count` or `build_segments` logic changes in a way
+/// that produces different segment boundaries for the same file size.  Stored in the DB
+/// alongside each download's segment set; a mismatch forces a fresh segmentation on resume
+/// rather than silently writing to wrong byte offsets.
+const SEGMENT_FORMULA_VERSION: i64 = 2;
+
+fn resolved_thread_count(total_bytes: u64, override_threads: Option<u8>) -> u8 {
     if total_bytes == 0 {
         return 1;
     }
 
-    let max_threads_by_size = total_bytes.min(64) as u8;
-    requested.min(max_threads_by_size)
+    let requested = override_threads
+        .unwrap_or_else(|| calc_thread_count(total_bytes))
+        .clamp(1, 64);
+
+    // Cap so each segment is at least MIN_SEGMENT_BYTES to avoid excessive fragmentation.
+    let max_by_min_segment = (total_bytes / MIN_SEGMENT_BYTES).clamp(1, 64) as u8;
+    requested.min(max_by_min_segment)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── resolved_thread_count ─────────────────────────────────────────────────
+
+    #[test]
+    fn zero_bytes_is_always_one_thread() {
+        assert_eq!(resolved_thread_count(0, None), 1);
+        assert_eq!(resolved_thread_count(0, Some(32)), 1);
+    }
+
+    #[test]
+    fn min_segment_size_caps_thread_count() {
+        // 2 MiB file: formula gives 4 (clamp min), but 2 MiB / 1 MiB = 2 segments max
+        assert_eq!(resolved_thread_count(2 * 1024 * 1024, None), 2);
+        // 1 MiB exactly: 1 segment max
+        assert_eq!(resolved_thread_count(1024 * 1024, None), 1);
+        // 512 KiB (below 1 MiB): clamped to 1
+        assert_eq!(resolved_thread_count(512 * 1024, None), 1);
+    }
+
+    #[test]
+    fn large_file_respects_formula() {
+        // 500 MiB: formula gives 10 threads; 500 MiB / 1 MiB = 500 cap → formula wins
+        assert_eq!(resolved_thread_count(500 * 1024 * 1024, None), 10);
+    }
+
+    #[test]
+    fn override_is_capped_by_min_segment_size() {
+        // 8 MiB file, user wants 32 threads: 8 MiB / 1 MiB = 8 max → capped to 8
+        assert_eq!(resolved_thread_count(8 * 1024 * 1024, Some(32)), 8);
+    }
+
+    #[test]
+    fn override_respected_when_within_bounds() {
+        // 500 MiB file, user requests 6 threads: both formula (10) and size cap (500) allow it
+        assert_eq!(resolved_thread_count(500 * 1024 * 1024, Some(6)), 6);
+    }
+
+    // ── can_reuse_segments ────────────────────────────────────────────────────
+
+    fn make_seg(start: i64, end: i64) -> db::SegmentRow {
+        db::SegmentRow {
+            id: 1,
+            download_id: "test".to_string(),
+            start_byte: start,
+            end_byte: end,
+            completed: 0,
+        }
+    }
+
+    #[test]
+    fn reuse_exact_match() {
+        let existing = vec![make_seg(0, 499), make_seg(500, 999)];
+        assert!(can_reuse_segments(&existing, &[(0, 499), (500, 999)]));
+    }
+
+    #[test]
+    fn reuse_rejected_on_count_mismatch() {
+        let existing = vec![make_seg(0, 999)];
+        assert!(!can_reuse_segments(&existing, &[(0, 499), (500, 999)]));
+    }
+
+    #[test]
+    fn reuse_rejected_on_boundary_mismatch() {
+        let existing = vec![make_seg(0, 499), make_seg(500, 999)];
+        // Different split point
+        assert!(!can_reuse_segments(&existing, &[(0, 249), (250, 999)]));
+    }
+
+    #[test]
+    fn reuse_empty_is_not_resumable() {
+        assert!(!can_reuse_segments(&[], &[(0, 999)]));
+    }
 }
 
 fn can_reuse_segments(existing: &[db::SegmentRow], expected: &[(u64, u64)]) -> bool {

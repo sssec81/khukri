@@ -20,6 +20,10 @@ node_modules/
 extension/dist/
 extension/.cache/
 
+# Generated native messaging manifest — created by register-host.{sh,ps1} at install time.
+# Must not be committed: contains an absolute binary path and the real extension ID.
+extension/com.khukri.host.json
+
 # Sidecar binaries (Sprint 4+) — tracked by version file, not the binary
 sidecar/yt-dlp
 sidecar/yt-dlp.exe

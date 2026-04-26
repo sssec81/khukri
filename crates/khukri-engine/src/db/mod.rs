@@ -236,3 +236,31 @@ pub async fn get_all_segments(pool: &SqlitePool, download_id: &str) -> Result<Ve
     .await?;
     Ok(rows)
 }
+
+pub async fn get_segment_formula_version(
+    pool: &SqlitePool,
+    download_id: &str,
+) -> Result<Option<i64>> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT segment_formula_version FROM downloads WHERE id = ?",
+    )
+    .bind(download_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(v,)| v))
+}
+
+pub async fn set_segment_formula_version(
+    pool: &SqlitePool,
+    download_id: &str,
+    version: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE downloads SET segment_formula_version = ? WHERE id = ?",
+    )
+    .bind(version)
+    .bind(download_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

@@ -20,6 +20,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager, State,
 };
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -148,6 +149,12 @@ struct AppState {
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
     quitting: Arc<AtomicBool>,
+}
+
+#[cfg(desktop)]
+struct TrayMenuState {
+    pause_all: MenuItem<tauri::Wry>,
+    resume_all: MenuItem<tauri::Wry>,
 }
 
 fn settings_path() -> PathBuf {
@@ -368,7 +375,36 @@ async fn emit_queue_updated(app: &tauri::AppHandle, pool: &SqlitePool) -> Result
         .into_iter()
         .map(map_download_row)
         .collect::<Vec<_>>();
+    sync_tray_menu_state(app, &queue)?;
     app.emit("queue-updated", &queue).map_err(|e| e.to_string())
+}
+
+#[cfg(desktop)]
+fn sync_tray_menu_state(app: &tauri::AppHandle, queue: &[DownloadListItem]) -> Result<(), String> {
+    let Some(tray_menu) = app.try_state::<TrayMenuState>() else {
+        return Ok(());
+    };
+
+    let can_pause = queue
+        .iter()
+        .any(|item| item.status == "active" || item.status == "queued");
+    let can_resume = queue.iter().any(|item| item.status == "paused");
+
+    tray_menu
+        .pause_all
+        .set_enabled(can_pause)
+        .map_err(|e| e.to_string())?;
+    tray_menu
+        .resume_all
+        .set_enabled(can_resume)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+fn sync_tray_menu_state(_app: &tauri::AppHandle, _queue: &[DownloadListItem]) -> Result<(), String> {
+    Ok(())
 }
 
 async fn persist_queued_download(
@@ -424,13 +460,14 @@ async fn promote_pending_downloads_with_parts(
 
     loop {
         let max_concurrent = settings.lock().await.general.max_concurrent as usize;
-        let active_ids: HashSet<String> = {
-            let guard = active.lock().await;
-            if guard.len() >= max_concurrent {
-                break;
-            }
-            guard.keys().cloned().collect()
-        };
+        
+        // Lock active map and hold it to prevent race conditions
+        let active_guard = active.lock().await;
+        if active_guard.len() >= max_concurrent {
+            break;
+        }
+        let active_ids: HashSet<String> = active_guard.keys().cloned().collect();
+        drop(active_guard);
 
         let mut queued = db::list_downloads(&pool)
             .await
@@ -507,18 +544,24 @@ async fn start_or_queue_download(
     let requested_id = download_id_for(&request.url, &output_path_string);
     let max_concurrent = settings_snapshot.general.max_concurrent as usize;
 
-    if active.lock().await.contains_key(&requested_id) {
+    // Acquire lock once and hold it through duplicate check and concurrency limit check
+    let active_guard = active.lock().await;
+    
+    if active_guard.contains_key(&requested_id) {
+        drop(active_guard);
         return refresh_download_snapshot(&pool, &requested_id)
             .await?
             .ok_or_else(|| format!("download already active: {requested_id}"));
     }
 
-    if !is_scheduler_window_open(&settings_snapshot) || active.lock().await.len() >= max_concurrent {
+    if !is_scheduler_window_open(&settings_snapshot) || active_guard.len() >= max_concurrent {
+        drop(active_guard);
         let snapshot = persist_queued_download(&pool, &request, &settings_snapshot).await?;
         emit_queue_updated(&app, &pool).await?;
         return Ok(snapshot);
     }
-
+    
+    drop(active_guard);
     start_managed_download(app, pool, active, cancelled, settings, request).await
 }
 
@@ -722,6 +765,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         app,
         &[&pause_all, &resume_all, &separator, &open_dashboard, &quit],
     )?;
+
+    app.manage(TrayMenuState {
+        pause_all: pause_all.clone(),
+        resume_all: resume_all.clone(),
+    });
 
     let mut tray = TrayIconBuilder::new()
         .menu(&menu)
@@ -949,6 +997,15 @@ async fn update_settings(
 }
 
 #[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app
+        .dialog()
+        .file()
+        .blocking_pick_folder();
+    Ok(path.map(|p| p.to_string()))
+}
+
+#[tauri::command]
 async fn reset_settings_section(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1019,6 +1076,15 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
+                    let queue = db::list_downloads(&state.pool)
+                        .await
+                        .map(|rows| rows.into_iter().map(map_download_row).collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    let _ = sync_tray_menu_state(&app_handle, &queue);
+                });
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>();
                     let _ = promote_pending_downloads(&app_handle, &state).await;
                 });
                 let app_handle = app.handle().clone();
@@ -1034,6 +1100,7 @@ pub fn run() {
                 });
                 Ok(())
             })
+            .plugin(tauri_plugin_dialog::init())
             .invoke_handler(tauri::generate_handler![
                 get_queue,
                 start_download,
@@ -1045,7 +1112,8 @@ pub fn run() {
                 open_download_folder,
                 get_settings,
                 update_settings,
-                reset_settings_section
+                reset_settings_section,
+                pick_folder
             ])
             .run(tauri::generate_context!())
             .expect("error while running tauri application");

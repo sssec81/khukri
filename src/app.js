@@ -181,6 +181,10 @@ function fileExtInfo(filePath) {
   return { ext: ext || "bin", category: "other" };
 }
 
+function setStatusReady(node, label) {
+  node.innerHTML = `<span class="status-dot" aria-hidden="true"></span>${htmlEscape(label)}`;
+}
+
 function htmlEscape(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -313,7 +317,7 @@ function renderQueue(items) {
     const escapedFailureLabel = htmlEscape(strings["downloads.failureLabel"]);
 
     return `
-      <article class="download-item" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" aria-label="${escapedBaseName}">
+      <article class="download-item" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" data-status="${htmlEscape(liveStatus)}" aria-label="${escapedBaseName}">
         <div class="file-ext file-ext--${htmlEscape(category)}" aria-hidden="true">
           ${htmlEscape(ext.toUpperCase())}
           <div class="file-ext-dot"></div>
@@ -461,7 +465,7 @@ async function refreshQueue(strings, options = {}) {
     currentQueue = queue;
     renderQueue(queue);
     if (!options.preserveStatus) {
-      statusNode.textContent = strings["status.ready"];
+      setStatusReady(statusNode, strings["status.ready"]);
     }
   } catch (error) {
     statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
@@ -516,7 +520,7 @@ async function handleRowAction(action, id) {
     throw error;
   }
 
-  document.getElementById("formStatus").textContent = strings["status.ready"];
+  setStatusReady(document.getElementById("formStatus"), strings["status.ready"]);
   await refreshQueue(strings);
 }
 
@@ -527,7 +531,7 @@ async function saveSettings() {
   const settings = collectSettingsForm();
   const nextSettings = await invoke("update_settings", { settings });
   currentSettings = nextSettings;
-  statusNode.textContent = strings["settings.saved"];
+  statusNode.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
 }
 
 async function resetSettingsSection(section) {
@@ -620,6 +624,16 @@ async function main() {
     }
   });
 
+  document.getElementById("browseDefaultPath").addEventListener("click", () => {
+    void invoke("pick_folder").then((picked) => {
+      if (picked) {
+        document.getElementById("settingsDefaultPath").value = picked;
+      }
+    }).catch((error) => {
+      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    });
+  });
+
   settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void saveSettings().catch((error) => {
@@ -631,7 +645,7 @@ async function main() {
     button.addEventListener("click", () => {
       settingsStatus.textContent = strings["status.loading"];
       void resetSettingsSection(button.dataset.section).then(() => {
-        settingsStatus.textContent = strings["settings.saved"];
+        settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
       }).catch((error) => {
         settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
       });

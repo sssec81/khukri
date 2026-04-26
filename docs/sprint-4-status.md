@@ -44,6 +44,7 @@ One-click YouTube and stream downloading from the browser using bundled `yt-dlp`
 - Sprint 3 desktop shell is nearly complete and can host media queue/progress UX
 - Tauri sidecar packaging must be configured for platform-specific binaries
 - FFmpeg licensing and packaging constraints must remain GPL-compatible
+- Size-aware sidecar planning is documented in `docs/packaging-strategy.md`
 
 ## Risks To Watch
 
@@ -59,3 +60,8 @@ One-click YouTube and stream downloading from the browser using bundled `yt-dlp`
 - Should media jobs reuse the existing download row model or get a media-specific subtype/status surface?
 - How should failed stitching be presented in the UI: single failed row or separate download/stitch phases?
 - Should the updater be automatic by default or opt-in from Settings?
+
+## Related Docs
+
+- `docs/packaging-strategy.md`
+- `docs/adr-001-ytdlp-update-strategy.md`

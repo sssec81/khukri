@@ -73,7 +73,7 @@ This project exists because the downloader space still has demand, but much of t
 | 4 - The Scabbard | yt-dlp + FFmpeg integration | Planned |
 | 5 - Distribution | CI/CD, code signing, reproducible builds | Planned |
 
-Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working desktop shell in `src-tauri/` + `src/`, and both `cargo check -p khukri-engine` and `cargo check -p khukri-app` pass in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
+Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working desktop shell in `src-tauri/` + `src/`, `cargo test --workspace` passes on native Windows, and both `cargo check -p khukri-engine` and `cargo check -p khukri-app` pass in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
 Sprint 4 planning is now tracked in [docs/sprint-4-status.md](docs/sprint-4-status.md).
 
 ---
@@ -92,7 +92,7 @@ Planned next:
 
 - yt-dlp + FFmpeg integration for media downloads
 - richer packaging and release workflows
-- production polish across install, branding, and platform verification
+- production polish across install, branding, and release workflows
 
 ---
 
@@ -101,9 +101,10 @@ Planned next:
 ### Sprint 3 Finish Line
 
 - finish stabilization and edge-case QA
-- verify Windows runtime behavior
+- verify native host registration and end-to-end browser handoff on Windows
 - polish tray-state behavior
 - replace placeholder branding assets
+- measure Windows cold-start and RAM budget
 
 ### Sprint 4: Media Support
 
@@ -161,8 +162,8 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 
 - Sprint 3 is not fully release-polished yet
 - tray `Pause All` / `Resume All` enable-disable state still needs refinement
-- Windows runtime verification is still pending
 - `Open Folder` can be unreliable in WSL or desktop-less Linux setups
+- Windows native shell is now verified for build, test, and app launch; extension handoff and runtime polish still need a final pass
 - branding, screenshots, and production packaging polish are not final
 - Sprint 4 media features are planned, not shipped yet
 
@@ -198,8 +199,9 @@ khukri/
 ### Prerequisites
 
 - Rust toolchain (`rustup`, `cargo`)
-- Linux, WSL2, or macOS for the current native-host development flow
+- Windows 10/11, Linux, WSL2, or macOS
 - Chrome or another Chromium browser for extension testing
+- Tauri CLI for desktop app dev: `cargo install tauri-cli --version "^2"`
 - For Tauri on Ubuntu/WSL: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, and `librsvg2-dev`
 
 ### Build
@@ -213,7 +215,8 @@ cargo build --workspace
 Current workspace verification:
 
 - `khukri-bridge`: 1 native protocol integration test
-- `khukri-engine`: 18 unit tests
+- `khukri-bridge`: 12 unit tests
+- `khukri-engine`: 29 unit tests
 - `khukri-engine`: 6 integration tests
 
 ```bash
@@ -224,6 +227,8 @@ cargo test --workspace
 
 Current local verification:
 
+- `cargo test --workspace` passes on native Windows 11 on 2026-04-26
+- `cargo tauri dev` launches successfully on native Windows 11 on 2026-04-26
 - `cargo check -p khukri-engine` passes on Ubuntu 24.04 / WSL
 - `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing the required GTK/WebKit packages
 - `cargo tauri info` reports a valid Rust/Tauri toolchain once those system packages are present
