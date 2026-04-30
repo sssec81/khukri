@@ -21,6 +21,9 @@
   },
   "bundle": {
     "active": false,
+    "externalBin": [
+      "../sidecar/yt-dlp"
+    ],
     "icon": [
       "icons/16x16.png",
       "icons/32x32.png",
@@ -32,4 +35,3 @@
     ]
   }
 }
-

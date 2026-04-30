@@ -3,7 +3,7 @@
 Date: 2026-04-25
 Scope: EPIC-04 - The Scabbard
 
-Overall status: Planned
+Overall status: In Progress
 
 ## Goal
 
@@ -13,12 +13,12 @@ One-click YouTube and stream downloading from the browser using bundled `yt-dlp`
 
 | Ticket | Title | Status | Notes |
 |---|---|---|---|
-| KHU-401 | Bundle pinned yt-dlp sidecar binary | Planned | First blocking task for the sprint. Needs pinned version file, checksums, and Tauri packaging wiring. |
-| KHU-402 | yt-dlp invocation from Rust + quality selection | Planned | Core execution path. Depends on KHU-401 and establishes the Rust-side job model and progress events. |
-| KHU-403 | yt-dlp auto-updater | Planned | Should land after sidecar bundling and basic invocation are stable so update logic can target a known-good baseline. |
-| KHU-404 | Bundle minimal FFmpeg for stream stitching | Planned | Required for merged video/audio outputs from yt-dlp. Packaging, licensing, and binary size need careful validation. |
-| KHU-405 | Quality selector in Floating Blade UI | Planned | Browser-side UX for choosing `best`, `1080p`, `720p`, or `audio-only`. Depends on KHU-402 defining the supported `quality` contract. |
-| KHU-406 | Legal/ToS notice in onboarding | Planned | One-time onboarding gate for media features. Can be implemented in parallel with KHU-405 once final text is confirmed from the PRD. |
+| KHU-401 | Bundle pinned yt-dlp sidecar binary | Complete | Pinned to `2026.03.17`; `sidecar/yt-dlp.version`, `sidecar/yt-dlp.sha256`, Tauri `externalBin`, and platform binaries are now in repo. |
+| KHU-402 | yt-dlp invocation from Rust + quality selection | In Progress | Native bridge and desktop shell now route Blade/stream jobs through a `yt-dlp` job model with quality mapping, sidecar resolution, parsed progress events, richer failure reasons, and safer no-FFmpeg fallback selectors. End-to-end validation and final cancel/resume polish are still open. |
+| KHU-403 | yt-dlp auto-updater | In Progress | Desktop settings now expose a `ytdlp_auto_update` toggle plus manual check action, and the Tauri app has a background GitHub Releases worker that downloads, checksum-verifies, canary-checks, and hot-swaps managed yt-dlp sidecars in app data. On-device validation and user-facing notification polish are still open. |
+| KHU-404 | Bundle minimal FFmpeg for stream stitching | In Progress | Media invocations now look for a platform FFmpeg sidecar or `KHUKRI_FFMPEG_BIN`, pass `--ffmpeg-location` into `yt-dlp`, and log `ffmpeg -version` at desktop startup when present. Shipping the binaries and validating package size are still open. |
+| KHU-405 | Quality selector in Floating Blade UI | In Progress | Blade UI now exposes a hover quality picker with per-site persistence in `chrome.storage.local`, and the selected value is forwarded to the native queue request. Browser-side polish and end-to-end validation are still pending. |
+| KHU-406 | Legal/ToS notice in onboarding | In Progress | A blocking desktop onboarding notice now persists `settings.json:onboarding_complete` and requires an explicit `I Understand` acknowledgment. Accessibility and exact once-only behavior still need validation on-device. |
 
 ## Recommended Order
 
@@ -65,3 +65,9 @@ One-click YouTube and stream downloading from the browser using bundled `yt-dlp`
 
 - `docs/packaging-strategy.md`
 - `docs/adr-001-ytdlp-update-strategy.md`
+
+## Implementation Notes
+
+- Tauri sidecar packaging is wired through `src-tauri/tauri.conf.json` with `bundle.externalBin = ["../sidecar/yt-dlp"]`.
+- The repo now carries Tauri target-triple filenames for Windows x64, Linux x64, and both Apple triples.
+- The macOS files both point to the same upstream universal `yt-dlp_macos` asset because Tauri resolves sidecars by build target triple.

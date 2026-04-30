@@ -43,6 +43,16 @@
 </head>
 <body>
   <div id="bootSplash" aria-hidden="true">Loading Khukri...</div>
+  <div id="mediaOnboarding" class="onboarding-backdrop" hidden>
+    <section class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" aria-describedby="onboardingBody">
+      <p class="onboarding-kicker" data-i18n="onboarding.kicker"></p>
+      <h2 id="onboardingTitle" class="onboarding-title" data-i18n="onboarding.title"></h2>
+      <div id="onboardingBody" class="onboarding-copy">
+        <p data-i18n="onboarding.body"></p>
+      </div>
+      <button id="acknowledgeOnboarding" class="primary-button onboarding-button" type="button" data-i18n="onboarding.accept"></button>
+    </section>
+  </div>
   <div class="shell">
 
     <aside class="sidebar">
@@ -118,6 +128,16 @@
                   </select>
                 </label>
                 <label class="field">
+                  <span data-i18n="composer.qualityLabel"></span>
+                  <select id="quality" name="quality">
+                    <option value="" data-i18n="quality.direct"></option>
+                    <option value="best" data-i18n="quality.best"></option>
+                    <option value="1080p" data-i18n="quality.1080p"></option>
+                    <option value="720p" data-i18n="quality.720p"></option>
+                    <option value="audio-only" data-i18n="quality.audioOnly"></option>
+                  </select>
+                </label>
+                <label class="field">
                   <span data-i18n="composer.throttleLabel"></span>
                   <input id="throttle" name="throttle" type="number" min="0" step="1" placeholder="0">
                 </label>
@@ -180,6 +200,14 @@
                   <span data-i18n="settings.general.concurrentLabel"></span>
                   <input id="settingsMaxConcurrent" name="generalMaxConcurrent" type="number" min="1" max="16" step="1">
                 </label>
+                <label class="field checkbox-field">
+                  <input id="settingsYtdlpAutoUpdate" name="settingsYtdlpAutoUpdate" type="checkbox">
+                  <span data-i18n="settings.general.ytdlpAutoUpdateLabel"></span>
+                </label>
+                <div class="field">
+                  <span data-i18n="settings.general.ytdlpActionsLabel"></span>
+                  <button id="checkYtdlpNow" class="ghost-btn ghost-btn-wide" type="button" data-i18n="settings.general.ytdlpCheckNow"></button>
+                </div>
               </div>
             </article>
 

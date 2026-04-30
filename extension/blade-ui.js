@@ -1,5 +1,13 @@
 (function () {
     const PILL_ID = 'khukri-blade-pill';
+    const QUALITY_STORAGE_KEY = 'quality_preferences';
+    const QUALITY_DEFAULT = 'best';
+    const QUALITY_OPTIONS = [
+        { value: 'best', label: 'Best', subtitle: 'BEST AVAILABLE' },
+        { value: '1080p', label: '1080p', subtitle: '1080P CAP' },
+        { value: '720p', label: '720p', subtitle: '720P CAP' },
+        { value: 'audio-only', label: 'Audio Only', subtitle: 'MP3 EXTRACT' },
+    ];
     let showTimer = null;
 
     const ICON_DOWNLOAD = `
@@ -33,7 +41,8 @@
             top: 16px;
             right: 16px;
             z-index: 2147483647;
-            display: inline-flex;
+            display: flex;
+            flex-direction: column;
             align-items: stretch;
             cursor: pointer;
             border-radius: 16px;
@@ -75,6 +84,18 @@
             box-shadow:
                 0 18px 38px rgba(0, 0, 0, 0.45),
                 0 0 0 1px rgba(255, 159, 28, 0.18);
+        }
+
+        #${PILL_ID}:hover .kh-quality-wrap,
+        #${PILL_ID}:focus-within .kh-quality-wrap {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+        }
+
+        #${PILL_ID} .kh-main {
+            display: inline-flex;
+            align-items: stretch;
         }
 
         #${PILL_ID} .kh-icon-zone {
@@ -148,6 +169,47 @@
             background: rgba(255, 255, 255, 0.06);
         }
 
+        #${PILL_ID} .kh-quality-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.12));
+            opacity: 0;
+            transform: translateY(-6px);
+            pointer-events: none;
+            transition: opacity 0.16s ease, transform 0.16s ease;
+        }
+
+        #${PILL_ID} .kh-quality-label {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: rgba(255, 255, 255, 0.6);
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        #${PILL_ID} .kh-quality-select {
+            flex: 1 1 auto;
+            min-width: 0;
+            border: 1px solid rgba(255, 159, 28, 0.24);
+            border-radius: 10px;
+            background: rgba(9, 10, 14, 0.72);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            padding: 8px 10px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        #${PILL_ID} .kh-quality-select:focus {
+            border-color: rgba(255, 159, 28, 0.65);
+            box-shadow: 0 0 0 2px rgba(255, 159, 28, 0.15);
+        }
+
         #${PILL_ID}.kh-dismissing {
             animation: khukri-out 0.22s cubic-bezier(0.4, 0, 1, 1) both !important;
             pointer-events: none;
@@ -204,6 +266,29 @@
         }
     }
 
+    function qualityForOrigin(result, origin) {
+        const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
+            ? result[QUALITY_STORAGE_KEY]
+            : null;
+        const saved = prefs && typeof prefs[origin] === 'string' ? prefs[origin] : '';
+        return QUALITY_OPTIONS.some((option) => option.value === saved) ? saved : QUALITY_DEFAULT;
+    }
+
+    function saveQuality(origin, quality) {
+        safeStorageGet([QUALITY_STORAGE_KEY], (result) => {
+            const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
+                ? { ...result[QUALITY_STORAGE_KEY] }
+                : {};
+            prefs[origin] = quality;
+            safeStorageSet({ [QUALITY_STORAGE_KEY]: prefs });
+        });
+    }
+
+    function subtitleForQuality(quality) {
+        const match = QUALITY_OPTIONS.find((option) => option.value === quality);
+        return match ? match.subtitle : 'BEST AVAILABLE';
+    }
+
     function dismiss(pill, origin) {
         pill.classList.add('kh-dismissing');
         pill.addEventListener('animationend', () => pill.remove(), { once: true });
@@ -226,12 +311,13 @@
         if (existing) existing.remove();
     }
 
-    function queueDownload() {
+    function queueDownload(quality) {
         return safeSendMessage({
             type: 'queue_download',
             source: 'blade',
             filename: document.title || 'video',
-            pageUrl: location.href
+            pageUrl: location.href,
+            quality
         });
     }
 
@@ -249,6 +335,11 @@
             pill.setAttribute('role', 'button');
             pill.setAttribute('tabindex', '0');
             pill.setAttribute('aria-label', 'Download this video with Khukri');
+            const selectedQuality = qualityForOrigin(result, origin);
+            let activeQuality = selectedQuality;
+
+            const main = document.createElement('div');
+            main.className = 'kh-main';
             const iconZone = document.createElement('div');
             iconZone.className = 'kh-icon-zone';
             const iconCircle = document.createElement('div');
@@ -267,7 +358,7 @@
             title.appendChild(brand);
             const sub = document.createElement('div');
             sub.className = 'kh-sub';
-            sub.textContent = 'HD \xB7 MP4 READY';
+            sub.textContent = subtitleForQuality(activeQuality);
             content.appendChild(title);
             content.appendChild(sub);
 
@@ -280,19 +371,51 @@
             closeBtn.setAttribute('aria-label', 'Dismiss');
             closeBtn.innerHTML = ICON_CLOSE;
 
-            pill.appendChild(iconZone);
-            pill.appendChild(content);
-            pill.appendChild(sep);
-            pill.appendChild(closeBtn);
+            main.appendChild(iconZone);
+            main.appendChild(content);
+            main.appendChild(sep);
+            main.appendChild(closeBtn);
+
+            const qualityWrap = document.createElement('div');
+            qualityWrap.className = 'kh-quality-wrap';
+            const qualityLabel = document.createElement('span');
+            qualityLabel.className = 'kh-quality-label';
+            qualityLabel.textContent = 'Quality';
+            const qualitySelect = document.createElement('select');
+            qualitySelect.className = 'kh-quality-select';
+            qualitySelect.setAttribute('aria-label', 'Preferred video quality');
+            for (const option of QUALITY_OPTIONS) {
+                const node = document.createElement('option');
+                node.value = option.value;
+                node.textContent = option.label;
+                qualitySelect.appendChild(node);
+            }
+            qualitySelect.value = activeQuality;
+            qualityWrap.appendChild(qualityLabel);
+            qualityWrap.appendChild(qualitySelect);
+
+            pill.appendChild(main);
+            pill.appendChild(qualityWrap);
 
             closeBtn.addEventListener('click', (event) => {
                 event.stopPropagation();
                 dismiss(pill, origin);
             });
 
+            qualityWrap.addEventListener('click', (event) => {
+                event.stopPropagation();
+            });
+
+            qualitySelect.addEventListener('change', (event) => {
+                activeQuality = event.target.value || QUALITY_DEFAULT;
+                sub.textContent = subtitleForQuality(activeQuality);
+                saveQuality(origin, activeQuality);
+            });
+
             pill.addEventListener('click', (event) => {
                 if (event.target.closest('.kh-close')) return;
-                if (!queueDownload()) {
+                if (event.target.closest('.kh-quality-wrap')) return;
+                if (!queueDownload(activeQuality)) {
                     pill.remove();
                     return;
                 }

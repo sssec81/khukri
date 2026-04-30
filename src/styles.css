@@ -78,6 +78,7 @@
 [hidden] { display: none !important; }
 html, body { height: 100%; overflow: hidden; margin: 0; }
 body { background: var(--kh-bg); }
+body.onboarding-open { overflow: hidden; }
 
 /* ── SCROLLBAR ─────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -312,6 +313,86 @@ body { background: var(--kh-bg); }
 }
 .primary-button:active { transform: scale(0.97); filter: brightness(0.95); }
 
+/* Onboarding */
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top, rgba(255, 159, 28, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(8, 11, 14, 0.74), rgba(6, 8, 11, 0.88));
+  backdrop-filter: blur(10px);
+}
+
+.onboarding-card {
+  width: min(720px, 100%);
+  padding: 28px 28px 24px;
+  border: 1px solid rgba(255, 159, 28, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)),
+    var(--kh-surface);
+  box-shadow:
+    0 28px 80px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255,255,255,0.03) inset;
+}
+
+.onboarding-kicker {
+  margin: 0 0 10px;
+  color: var(--kh-amber-t);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.onboarding-title {
+  margin: 0 0 14px;
+  color: var(--kh-t1);
+  font-size: clamp(26px, 4vw, 38px);
+  line-height: 1.06;
+  letter-spacing: -0.04em;
+}
+
+.onboarding-copy {
+  max-width: 60ch;
+  color: var(--kh-t1);
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.onboarding-copy p {
+  margin: 0;
+}
+
+.onboarding-button {
+  margin-top: 22px;
+  min-width: 160px;
+  min-height: 44px;
+}
+
+@media (max-width: 640px) {
+  .onboarding-backdrop {
+    padding: 14px;
+  }
+
+  .onboarding-card {
+    padding: 20px 18px 18px;
+  }
+
+  .onboarding-copy {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .onboarding-button {
+    width: 100%;
+  }
+}
+
 .ghost-btn {
   border: 1px solid var(--kh-b2);
   border-radius: var(--r1);
@@ -326,6 +407,10 @@ body { background: var(--kh-bg); }
 }
 
 .ghost-btn:hover { background: var(--kh-surface-hi); color: var(--kh-t1); border-color: var(--kh-b3); }
+
+.ghost-btn-wide {
+  min-width: 140px;
+}
 
 button[disabled] { opacity: 0.38; cursor: not-allowed; }
 

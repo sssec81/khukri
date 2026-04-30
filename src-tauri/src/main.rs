@@ -1,4 +1,6 @@
 mod bootstrap;
+mod media;
+mod ytdlp_updater;
 
 use chrono::{Local, Timelike};
 use std::collections::HashMap;
@@ -25,6 +27,10 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::bootstrap::{app_data_dir, init_db, DbConfig};
+use crate::media::{
+    log_ffmpeg_version, should_use_ytdlp, MediaDownloadHandle, MediaJob, MediaQuality,
+};
+use crate::ytdlp_updater::{maybe_update_ytdlp, spawn_background_updater};
 
 const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -37,6 +43,10 @@ struct StartDownloadRequest {
     priority: Option<String>,
     override_threads: Option<u8>,
     bytes_per_sec: Option<u64>,
+    quality: Option<String>,
+    source: Option<String>,
+    #[serde(default)]
+    custom_headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -49,6 +59,8 @@ struct DownloadListItem {
     status: String,
     priority: String,
     throttle_bytes_per_sec: Option<i64>,
+    media_quality: Option<String>,
+    request_source: Option<String>,
     failure_reason: Option<String>,
     created_at: i64,
 }
@@ -109,6 +121,18 @@ struct AppSettings {
     scheduler: SchedulerSettings,
     proxy: ProxySettings,
     appearance: AppearanceSettings,
+    #[serde(default, rename = "onboarding_complete")]
+    onboarding_complete: bool,
+    #[serde(default, rename = "ytdlp_auto_update")]
+    ytdlp_auto_update: bool,
+    #[serde(default, rename = "ytdlp_last_check")]
+    ytdlp_last_check: Option<i64>,
+    #[serde(default, rename = "ytdlp_version")]
+    ytdlp_version: Option<String>,
+    #[serde(default, rename = "ytdlp_last_notified_failure")]
+    ytdlp_last_notified_failure: Option<String>,
+    #[serde(default, rename = "ytdlp_last_rate_limit")]
+    ytdlp_last_rate_limit: bool,
 }
 
 impl Default for AppSettings {
@@ -134,13 +158,34 @@ impl Default for AppSettings {
             appearance: AppearanceSettings {
                 theme: "system".to_string(),
             },
+            onboarding_complete: false,
+            ytdlp_auto_update: true,
+            ytdlp_last_check: None,
+            ytdlp_version: None,
+            ytdlp_last_notified_failure: None,
+            ytdlp_last_rate_limit: false,
         }
     }
 }
 
 #[derive(Clone)]
 struct ManagedDownload {
-    handle: Arc<Mutex<DownloadHandle>>,
+    task: ManagedTask,
+}
+
+#[derive(Clone)]
+enum ManagedTask {
+    Engine(Arc<Mutex<DownloadHandle>>),
+    Media(Arc<MediaDownloadHandle>),
+}
+
+impl ManagedTask {
+    async fn cancel(&self) {
+        match self {
+            ManagedTask::Engine(handle) => handle.lock().await.cancel(),
+            ManagedTask::Media(handle) => handle.cancel(),
+        }
+    }
 }
 
 struct AppState {
@@ -268,8 +313,25 @@ fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
         status: row.status,
         priority: row.priority,
         throttle_bytes_per_sec: row.throttle_bytes_per_sec,
+        media_quality: row.media_quality,
+        request_source: row.request_source,
         failure_reason: row.failure_reason,
         created_at: row.created_at,
+    }
+}
+
+fn request_from_row(row: &db::DownloadRow) -> StartDownloadRequest {
+    StartDownloadRequest {
+        url: row.url.clone(),
+        file_path: row.file_path.clone(),
+        priority: Some(row.priority.clone()),
+        override_threads: None,
+        bytes_per_sec: row
+            .throttle_bytes_per_sec
+            .and_then(|value| u64::try_from(value).ok()),
+        quality: row.media_quality.clone(),
+        source: row.request_source.clone(),
+        custom_headers: HashMap::new(),
     }
 }
 
@@ -297,6 +359,44 @@ fn request_with_settings(mut request: StartDownloadRequest, settings: &AppSettin
         request.bytes_per_sec = settings.performance.bandwidth_cap;
     }
     request
+}
+
+fn browser_headers(
+    page_url: Option<&str>,
+    custom_headers: HashMap<String, String>,
+) -> Vec<(String, String)> {
+    const BLOCKED_HEADERS: &[&str] = &[
+        "host",
+        "content-length",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "upgrade",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "authorization",
+    ];
+
+    let mut headers: Vec<(String, String)> = custom_headers
+        .into_iter()
+        .filter(|(name, _)| {
+            let lower = name.to_ascii_lowercase();
+            !BLOCKED_HEADERS.contains(&lower.as_str())
+        })
+        .collect();
+
+    if let Some(page_url) = page_url {
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("Referer"))
+        {
+            headers.push(("Referer".to_string(), page_url.to_string()));
+        }
+    }
+
+    headers
 }
 
 fn is_scheduler_window_open(settings: &AppSettings) -> bool {
@@ -429,6 +529,14 @@ async fn persist_queued_download(
     )
     .await
     .map_err(|e| e.to_string())?;
+    db::set_download_request_metadata(
+        pool,
+        &id,
+        request.quality.as_deref(),
+        request.source.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     db::set_download_status(pool, &id, "queued")
         .await
         .map_err(|e| e.to_string())?;
@@ -482,13 +590,7 @@ async fn promote_pending_downloads_with_parts(
             break;
         };
 
-        let request = StartDownloadRequest {
-            url: row.url.clone(),
-            file_path: row.file_path.clone(),
-            priority: Some(row.priority.clone()),
-            override_threads: None,
-            bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
-        };
+        let request = request_from_row(&row);
 
         if let Err(error) = start_managed_download(
             app.clone(),
@@ -605,6 +707,20 @@ async fn start_managed_download(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
+    if should_use_ytdlp(request.source.as_deref(), request.quality.as_deref()) {
+        return start_managed_media_download(
+            app,
+            pool,
+            active,
+            cancelled,
+            request,
+            output_path,
+            output_path_string,
+            priority,
+        )
+        .await;
+    }
+
     let mut config = DownloadConfig::new(request.url.clone(), output_path);
     config.priority = priority.clone();
     config.override_threads = request.override_threads;
@@ -617,8 +733,16 @@ async fn start_managed_download(
     let id = handle.id().to_string();
     let progress = handle.subscribe();
     let managed = ManagedDownload {
-        handle: Arc::new(Mutex::new(handle)),
+        task: ManagedTask::Engine(Arc::new(Mutex::new(handle))),
     };
+    db::set_download_request_metadata(
+        &pool,
+        &id,
+        request.quality.as_deref(),
+        request.source.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     cancelled.lock().await.remove(&id);
     active.lock().await.insert(id.clone(), managed);
@@ -678,8 +802,150 @@ async fn start_managed_download(
         status: "queued".to_string(),
         priority: priority.as_str().to_string(),
         throttle_bytes_per_sec: request.bytes_per_sec.and_then(|value| i64::try_from(value).ok()),
+        media_quality: request.quality.clone(),
+        request_source: request.source.clone(),
         failure_reason: None,
         created_at: 0,
+    });
+    emit_queue_updated(&app, &pool).await?;
+    Ok(snapshot)
+}
+
+async fn start_managed_media_download(
+    app: tauri::AppHandle,
+    pool: SqlitePool,
+    active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    cancelled: Arc<Mutex<HashSet<String>>>,
+    request: StartDownloadRequest,
+    output_path: PathBuf,
+    output_path_string: String,
+    priority: Priority,
+) -> Result<DownloadListItem, String> {
+    let quality = MediaQuality::parse(request.quality.as_deref());
+    let id = download_id_for(&request.url, &output_path_string);
+    let headers = browser_headers(request.source.as_deref(), request.custom_headers.clone());
+
+    db::upsert_download(
+        &pool,
+        &id,
+        &request.url,
+        &output_path_string,
+        None,
+        priority.as_str(),
+        request.bytes_per_sec,
+        unix_now_secs(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    db::set_download_request_metadata(
+        &pool,
+        &id,
+        request.quality.as_deref(),
+        request.source.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    db::set_download_status(&pool, &id, "active")
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let handle = media::spawn_media_download(MediaJob {
+        id: id.clone(),
+        url: request.url.clone(),
+        output_path,
+        quality,
+        headers,
+    });
+    let progress = handle.subscribe();
+    let handle = Arc::new(handle);
+    let managed = ManagedDownload {
+        task: ManagedTask::Media(handle.clone()),
+    };
+
+    cancelled.lock().await.remove(&id);
+    active.lock().await.insert(id.clone(), managed);
+
+    let app_for_task = app.clone();
+    let id_for_task = id.clone();
+    let active_for_task = active.clone();
+    let cancelled_for_task = cancelled.clone();
+    let pool_for_task = pool.clone();
+    tokio::spawn(async move {
+        let mut progress_rx = progress;
+        let mut last_emit = None::<Instant>;
+        loop {
+            let snapshot = progress_rx.borrow().clone();
+            let is_terminal = matches!(
+                snapshot.status,
+                DownloadStatus::Complete | DownloadStatus::Failed | DownloadStatus::Paused
+            );
+            let should_emit = last_emit.is_none()
+                || is_terminal
+                || last_emit
+                    .map(|instant| instant.elapsed() >= UI_PROGRESS_INTERVAL)
+                    .unwrap_or(true);
+
+            if should_emit {
+                let payload = map_progress_event(&snapshot);
+                let _ = app_for_task.emit("download-progress", &payload);
+                last_emit = Some(Instant::now());
+            }
+
+            if is_terminal {
+                active_for_task.lock().await.remove(&id_for_task);
+                match snapshot.status {
+                    DownloadStatus::Complete => {
+                        if let Some(final_path) = handle.final_path().await {
+                            let _ = db::set_download_file_path(
+                                &pool_for_task,
+                                &snapshot.id,
+                                &final_path.display().to_string(),
+                            )
+                            .await;
+                        }
+                        let _ = db::set_download_status(&pool_for_task, &snapshot.id, "complete").await;
+                    }
+                    DownloadStatus::Paused => {
+                        if cancelled_for_task.lock().await.remove(&snapshot.id) {
+                            let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
+                            let _ = cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
+                        } else {
+                            let _ = db::set_download_status(&pool_for_task, &snapshot.id, "paused").await;
+                        }
+                    }
+                    DownloadStatus::Failed => {
+                        let reason = handle
+                            .failure_reason()
+                            .await
+                            .unwrap_or_else(|| "yt-dlp download failed".to_string());
+                        let _ = db::set_download_failed(&pool_for_task, &snapshot.id, &reason).await;
+                    }
+                    _ => {}
+                }
+                let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
+                break;
+            }
+
+            if progress_rx.changed().await.is_err() {
+                active_for_task.lock().await.remove(&id_for_task);
+                let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
+                break;
+            }
+        }
+    });
+
+    let snapshot = wait_for_download_snapshot(&pool, &id).await?.unwrap_or(DownloadListItem {
+        id,
+        url: request.url,
+        file_path: output_path_string,
+        total_bytes: None,
+        status: "active".to_string(),
+        priority: priority.as_str().to_string(),
+        throttle_bytes_per_sec: request.bytes_per_sec.and_then(|value| i64::try_from(value).ok()),
+        media_quality: request.quality,
+        request_source: request.source,
+        failure_reason: None,
+        created_at: unix_now_secs(),
     });
     emit_queue_updated(&app, &pool).await?;
     Ok(snapshot)
@@ -692,7 +958,7 @@ async fn pause_all_downloads(app: &tauri::AppHandle, state: &AppState) -> Result
     };
 
     for download in downloads {
-        download.handle.lock().await.cancel();
+        download.task.cancel().await;
     }
 
     db::set_download_status_where(&state.pool, &["active", "queued"], "paused")
@@ -710,13 +976,7 @@ async fn resume_all_downloads(app: tauri::AppHandle, state: &AppState) -> Result
             continue;
         }
 
-        let request = StartDownloadRequest {
-            url: row.url,
-            file_path: row.file_path,
-            priority: Some(row.priority),
-            override_threads: None,
-            bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
-        };
+        let request = request_from_row(&row);
 
         if let Err(error) = start_or_queue_download(
             app.clone(),
@@ -840,7 +1100,7 @@ async fn pause_download(
     };
 
     if let Some(download) = handle {
-        download.handle.lock().await.cancel();
+        download.task.cancel().await;
         return Ok(());
     }
 
@@ -879,13 +1139,7 @@ async fn resume_download(
         ));
     }
 
-    let request = StartDownloadRequest {
-        url: row.url,
-        file_path: row.file_path,
-        priority: Some(row.priority),
-        override_threads: None,
-        bytes_per_sec: row.throttle_bytes_per_sec.and_then(|value| u64::try_from(value).ok()),
-    };
+    let request = request_from_row(&row);
 
     start_or_queue_download(
         app,
@@ -911,7 +1165,7 @@ async fn cancel_download(
 
     if let Some(download) = handle {
         state.cancelled.lock().await.insert(id.clone());
-        download.handle.lock().await.cancel();
+        download.task.cancel().await;
         return Ok(());
     }
 
@@ -984,6 +1238,30 @@ async fn update_settings(
     let _ = app.emit("settings-updated", &settings);
     let _ = promote_pending_downloads(&app, &state).await;
     Ok(settings)
+}
+
+#[tauri::command]
+async fn acknowledge_media_onboarding(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSettings, String> {
+    let next_settings = {
+        let mut current = state.settings.lock().await;
+        current.onboarding_complete = true;
+        current.clone()
+    };
+
+    save_settings_to_disk(&next_settings)?;
+    let _ = app.emit("settings-updated", &next_settings);
+    Ok(next_settings)
+}
+
+#[tauri::command]
+async fn check_ytdlp_updates_now(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    maybe_update_ytdlp(app, state.settings.clone(), true).await
 }
 
 #[tauri::command]
@@ -1065,6 +1343,13 @@ pub fn run() {
                 setup_tray(app)?;
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    log_ffmpeg_version().await;
+                });
+                let app_handle = app.handle().clone();
+                let settings = app.state::<AppState>().settings.clone();
+                spawn_background_updater(app_handle, settings);
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
                     let queue = db::list_downloads(&state.pool)
                         .await
@@ -1102,6 +1387,8 @@ pub fn run() {
                 open_download_folder,
                 get_settings,
                 update_settings,
+                acknowledge_media_onboarding,
+                check_ytdlp_updates_now,
                 reset_settings_section,
                 pick_folder
             ])

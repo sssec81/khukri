@@ -12,10 +12,16 @@ const FALLBACK_STRINGS = {
   "composer.urlLabel": "Download URL",
   "composer.outputLabel": "Output path",
   "composer.priorityLabel": "Priority",
+  "composer.qualityLabel": "Mode",
   "composer.throttleLabel": "Throttle bytes/sec",
   "priority.high": "High",
   "priority.normal": "Normal",
   "priority.low": "Low",
+  "quality.direct": "Direct file",
+  "quality.best": "Best video",
+  "quality.1080p": "1080p",
+  "quality.720p": "720p",
+  "quality.audioOnly": "Audio only",
   "actions.start": "Start Download",
   "actions.refresh": "Refresh Queue",
   "actions.new_download": "New Download",
@@ -48,6 +54,9 @@ const FALLBACK_STRINGS = {
   "settings.general.copy": "Pick where downloads land and how many you want running in parallel later.",
   "settings.general.pathLabel": "Default download path",
   "settings.general.concurrentLabel": "Max concurrent downloads",
+  "settings.general.ytdlpAutoUpdateLabel": "Automatically check for yt-dlp updates",
+  "settings.general.ytdlpActionsLabel": "yt-dlp",
+  "settings.general.ytdlpCheckNow": "Check now",
   "settings.performance.title": "Performance",
   "settings.performance.copy": "Set per-download overrides that new downloads will inherit.",
   "settings.performance.threadsLabel": "Thread override",
@@ -66,13 +75,39 @@ const FALLBACK_STRINGS = {
   "settings.appearance.themeLabel": "Theme",
   "settings.appearance.themeSystem": "Follow system",
   "settings.appearance.themeDark": "Dark",
-  "settings.appearance.themeLight": "Light"
+  "settings.appearance.themeLight": "Light",
+  "onboarding.kicker": "Sprint 4 media notice",
+  "onboarding.title": "Media tools require a one-time acknowledgment.",
+  "onboarding.body": "yt-dlp functionality is provided as a technical capability. Compliance with the Terms of Service of any streaming platform is the user's responsibility. Khukri ships no credentials, no DRM bypass, and no circumvention of technical protection measures.",
+  "onboarding.accept": "I Understand",
+  "ytdlp.updateStarted": "Checking for yt-dlp updates...",
+  "ytdlp.updateApplied": "yt-dlp update applied.",
+  "ytdlp.updateNoop": "yt-dlp is already current."
 };
 
 const progressById = new Map();
 let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
+
+function onboardingComplete(settings) {
+  return Boolean(settings?.onboarding_complete);
+}
+
+function toggleOnboarding(settings) {
+  const overlay = document.getElementById("mediaOnboarding");
+  if (!overlay) {
+    return;
+  }
+
+  const shouldShow = !onboardingComplete(settings);
+  overlay.hidden = !shouldShow;
+  document.body.classList.toggle("onboarding-open", shouldShow);
+
+  if (shouldShow) {
+    document.getElementById("acknowledgeOnboarding")?.focus();
+  }
+}
 
 function persistThemePreference(themeMode) {
   try {
@@ -408,6 +443,7 @@ function syncDownloadDefaults(settings) {
 function populateSettingsForm(settings) {
   document.getElementById("settingsDefaultPath").value = settings.general.defaultDownloadPath || "";
   document.getElementById("settingsMaxConcurrent").value = String(settings.general.maxConcurrent ?? 3);
+  document.getElementById("settingsYtdlpAutoUpdate").checked = settings.ytdlp_auto_update !== false;
   document.getElementById("settingsThreadOverride").value = settings.performance.threadOverride ?? "";
   document.getElementById("settingsBandwidthCap").value = settings.performance.bandwidthCap ?? "";
   document.getElementById("settingsSchedulerEnabled").checked = Boolean(settings.scheduler.enabled);
@@ -444,7 +480,13 @@ function collectSettingsForm() {
     },
     appearance: {
       theme: document.getElementById("settingsTheme").value
-    }
+    },
+    onboarding_complete: onboardingComplete(currentSettings),
+    ytdlp_auto_update: document.getElementById("settingsYtdlpAutoUpdate").checked,
+    ytdlp_last_check: currentSettings?.ytdlp_last_check ?? null,
+    ytdlp_version: currentSettings?.ytdlp_version ?? null,
+    ytdlp_last_notified_failure: currentSettings?.ytdlp_last_notified_failure ?? null,
+    ytdlp_last_rate_limit: Boolean(currentSettings?.ytdlp_last_rate_limit)
   };
 }
 
@@ -453,6 +495,7 @@ function applySettings(settings) {
   populateSettingsForm(settings);
   syncDownloadDefaults(settings);
   applyTheme(settings);
+  toggleOnboarding(settings);
 }
 
 async function refreshQueue(strings, options = {}) {
@@ -531,14 +574,22 @@ async function saveSettings() {
   const settings = collectSettingsForm();
   const nextSettings = await invoke("update_settings", { settings });
   currentSettings = nextSettings;
+  applySettings(nextSettings);
   statusNode.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
 }
 
 async function resetSettingsSection(section) {
   currentSettings = await invoke("reset_settings_section", { section });
-  populateSettingsForm(currentSettings);
-  syncDownloadDefaults(currentSettings);
-  applyTheme(currentSettings);
+  applySettings(currentSettings);
+}
+
+async function acknowledgeOnboarding() {
+  const nextSettings = await invoke("acknowledge_media_onboarding");
+  applySettings(nextSettings);
+}
+
+async function checkYtdlpNow() {
+  await invoke("check_ytdlp_updates_now");
 }
 
 async function registerCloseToTray() {
@@ -578,6 +629,8 @@ async function main() {
   const statusNode = document.getElementById("formStatus");
   const settingsStatus = document.getElementById("settingsStatus");
   const downloadsList = document.getElementById("downloadsList");
+  const onboardingButton = document.getElementById("acknowledgeOnboarding");
+  const checkYtdlpButton = document.getElementById("checkYtdlpNow");
 
   showView("downloads");
   registerThemeWatcher();
@@ -600,6 +653,22 @@ async function main() {
     composer.hidden = true;
   });
 
+  onboardingButton?.addEventListener("click", () => {
+    settingsStatus.textContent = strings["status.loading"];
+    void acknowledgeOnboarding().then(() => {
+      settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
+    }).catch((error) => {
+      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    });
+  });
+
+  checkYtdlpButton?.addEventListener("click", () => {
+    settingsStatus.textContent = strings["ytdlp.updateStarted"];
+    void checkYtdlpNow().catch((error) => {
+      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    });
+  });
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(form);
@@ -608,7 +677,8 @@ async function main() {
       url: String(formData.get("downloadUrl") || ""),
       filePath: String(formData.get("outputPath") || ""),
       priority: String(formData.get("priority") || "normal"),
-      bytesPerSec: throttle > 0 ? throttle : null
+      bytesPerSec: throttle > 0 ? throttle : null,
+      quality: String(formData.get("quality") || "") || null
     };
 
     try {
@@ -762,6 +832,29 @@ async function main() {
     await eventApi.listen("settings-updated", (event) => {
       if (event.payload) {
         applySettings(event.payload);
+      }
+    });
+
+    await eventApi.listen("ytdlp-update-status", (event) => {
+      if (!event.payload) {
+        return;
+      }
+      if (event.payload.kind === "updated") {
+        settingsStatus.textContent = event.payload.message || strings["ytdlp.updateApplied"];
+        void invoke("get_settings").then((settings) => {
+          applySettings(settings);
+        }).catch(() => {});
+        return;
+      }
+      if (event.payload.kind === "noop") {
+        settingsStatus.textContent = event.payload.message || strings["ytdlp.updateNoop"];
+        void invoke("get_settings").then((settings) => {
+          applySettings(settings);
+        }).catch(() => {});
+        return;
+      }
+      if (event.payload.kind === "failed") {
+        settingsStatus.textContent = event.payload.message || strings["status.failed"];
       }
     });
   }

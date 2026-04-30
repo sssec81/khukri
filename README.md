@@ -8,8 +8,8 @@
 ## Project Signals
 
 - License: GPLv3
-- Current status: Sprint 3 near complete
-- Verified locally: `cargo check -p khukri-engine`, `cargo check -p khukri-app`
+- Current status: Sprint 4 in progress
+- Last verified locally before current Sprint 4 media work: `cargo check -p khukri-engine`, `cargo check -p khukri-app`
 - Platform direction: Windows, Linux, macOS
 
 Note:
@@ -70,11 +70,11 @@ This project exists because the downloader space still has demand, but much of t
 | 1 - The Steel | Download engine (segmenting, SQLite, retry, queue, throttle) | Complete |
 | 2 - The Sniffer | Browser extension + Native Messaging bridge | Complete |
 | 3 - The Handle | Tauri GUI | Near Complete |
-| 4 - The Scabbard | yt-dlp + FFmpeg integration | Planned |
+| 4 - The Scabbard | yt-dlp + FFmpeg integration | In Progress |
 | 5 - Distribution | CI/CD, code signing, reproducible builds | Planned |
 
 Sprint 2 is implemented and verified in the current `main` branch. Sprint 3 now has a working desktop shell in `src-tauri/` + `src/`, `cargo test --workspace` passes on native Windows, and both `cargo check -p khukri-engine` and `cargo check -p khukri-app` pass in Ubuntu 24.04 / WSL once the Tauri system packages are installed. See [docs/sprint-2-status.md](docs/sprint-2-status.md) and [docs/sprint-3-status.md](docs/sprint-3-status.md) for the ticket-by-ticket boards.
-Sprint 4 planning is now tracked in [docs/sprint-4-status.md](docs/sprint-4-status.md).
+Sprint 4 is now active in the codebase, not just in planning. Pinned `yt-dlp` sidecars, Rust media job wiring, Blade quality selection, onboarding/legal gating, FFmpeg handoff hooks, and the first pass of the `yt-dlp` updater are all tracked in [docs/sprint-4-status.md](docs/sprint-4-status.md).
 
 ---
 
@@ -90,9 +90,19 @@ Sprint 4 planning is now tracked in [docs/sprint-4-status.md](docs/sprint-4-stat
 
 Planned next:
 
-- yt-dlp + FFmpeg integration for media downloads
+- end-to-end validation of the Sprint 4 media flow on real devices
 - richer packaging and release workflows
 - production polish across install, branding, and release workflows
+
+Sprint 4 work already landed in the tree:
+
+- pinned `yt-dlp` sidecar assets in `sidecar/`
+- Tauri `externalBin` wiring for platform-specific media sidecar packaging
+- Rust-side `yt-dlp` media invocation with progress parsing and quality mapping
+- Blade hover quality picker with per-site persistence
+- desktop onboarding/legal notice for media tooling
+- FFmpeg sidecar discovery and `yt-dlp --ffmpeg-location` handoff
+- background `yt-dlp` updater scaffolding with managed app-data sidecars
 
 ---
 
@@ -108,12 +118,10 @@ Planned next:
 
 ### Sprint 4: Media Support
 
-- bundle pinned `yt-dlp`
-- invoke media downloads from Rust with progress reporting
-- add FFmpeg stitching for split audio/video streams
-- add quality picker in the Blade UI
-- add onboarding/legal notice for media tooling
-- app self-updater: tagged release checks, SHA-256 verification, hot-swap via write-to-temp → verify → rename (KHU-406)
+- finish validation of bundled `yt-dlp` media downloads across bridge and desktop flows
+- ship and verify FFmpeg sidecars for split audio/video stitching
+- prove updater behavior against live GitHub Releases data
+- polish notifications, packaging behavior, and failure recovery around media tooling
 
 Detailed planning lives in [docs/sprint-4-status.md](docs/sprint-4-status.md).
 
@@ -165,7 +173,7 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 - `Open Folder` can be unreliable in WSL or desktop-less Linux setups
 - Windows native shell is now verified for build, test, and app launch; extension handoff and runtime polish still need a final pass
 - branding, screenshots, and production packaging polish are not final
-- Sprint 4 media features are planned, not shipped yet
+- Sprint 4 media features are implemented in-progress but not fully validated or release-ready yet
 
 That said, the core engine, bridge, and desktop-shell path are already real and working.
 

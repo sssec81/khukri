@@ -20,7 +20,8 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 - Pill overlay uses Gurkha Green, Tiger Amber, glassmorphism, and an IDM-style player-adjacent layout
 - Appears after a 1.5 second delay without shifting page layout
 - Dismisses per-origin using `chrome.storage.local` during a session, with dev-time reset on install/startup
-- Blade clicks queue a native download through the service worker
+- Blade exposes a hover quality picker with per-origin persistence in `chrome.storage.local`
+- Blade clicks queue a native download through the service worker with the selected media quality
 
 ## Sprint 2 - KHU-201-KHU-205 Acceptance Criteria
 - [x] `manifest.json` targets MV3 with correct permissions

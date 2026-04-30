@@ -8,6 +8,8 @@ const recentRequests = new Map();
 const RECENT_REQUESTS_MAX = 500;
 const RECENT_REQUESTS_TTL_MS = 4000;
 const latestStreamByTab = new Map();
+const QUALITY_STORAGE_KEY = 'quality_preferences';
+const QUALITY_DEFAULT = 'best';
 
 function isTargetStream(url) {
     return STREAM_PATTERNS.some((pattern) => pattern.test(url || ''));
@@ -149,6 +151,36 @@ function waitForUsableStreamCandidate(tabId, timeoutMs = 3000) {
     });
 }
 
+function loadQualityPreference(origin) {
+    return new Promise((resolve) => {
+        if (!origin) {
+            resolve(QUALITY_DEFAULT);
+            return;
+        }
+
+        chrome.storage.local.get([QUALITY_STORAGE_KEY], (result) => {
+            if (chrome.runtime.lastError) {
+                resolve(QUALITY_DEFAULT);
+                return;
+            }
+
+            const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
+                ? result[QUALITY_STORAGE_KEY]
+                : null;
+            const saved = prefs && typeof prefs[origin] === 'string' ? prefs[origin] : '';
+            resolve(saved || QUALITY_DEFAULT);
+        });
+    });
+}
+
+function originFromUrl(url) {
+    try {
+        return url ? new URL(url).origin : '';
+    } catch {
+        return '';
+    }
+}
+
 function canHandleDownload(url) {
     // Khukri cannot handle these URL schemes
     if (!url) return false;
@@ -239,9 +271,11 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         const initial = latestStreamByTab.get(senderTabId) || null;
 
         (async () => {
+            const origin = originFromUrl(senderTabUrl);
             const remembered = hasUsableStreamCandidate(initial)
                 ? initial
                 : await waitForUsableStreamCandidate(senderTabId);
+            const requestedQuality = message.quality || await loadQualityPreference(origin);
 
             const resolvedUrl = hasUsableStreamCandidate(remembered)
                 ? remembered.url
@@ -258,7 +292,7 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 url: resolvedUrl,
                 filename: normalizeFilename(message.filename, resolvedUrl || senderTabUrl || 'video'),
                 size: null,
-                quality: 'best',
+                quality: requestedQuality,
                 source: 'blade',
                 pageUrl: resolvedPageUrl,
                 customHeaders: remembered?.customHeaders || buildCustomHeaders({

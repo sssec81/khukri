@@ -17,6 +17,8 @@ pub struct DownloadRow {
     pub status: String,
     pub priority: String,
     pub throttle_bytes_per_sec: Option<i64>,
+    pub media_quality: Option<String>,
+    pub request_source: Option<String>,
     pub failure_reason: Option<String>,
     pub created_at: i64,
 }
@@ -31,6 +33,8 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for DownloadRow {
             status: row.try_get("status")?,
             priority: row.try_get("priority")?,
             throttle_bytes_per_sec: row.try_get("throttle_bytes_per_sec")?,
+            media_quality: row.try_get("media_quality")?,
+            request_source: row.try_get("request_source")?,
             failure_reason: row.try_get("failure_reason")?,
             created_at: row.try_get("created_at")?,
         })
@@ -128,6 +132,38 @@ pub async fn set_download_status(pool: &SqlitePool, id: &str, status: &str) -> R
         .bind(id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub async fn set_download_request_metadata(
+    pool: &SqlitePool,
+    id: &str,
+    media_quality: Option<&str>,
+    request_source: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE downloads
+         SET media_quality = ?, request_source = ?
+         WHERE id = ?",
+    )
+    .bind(media_quality)
+    .bind(request_source)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_download_file_path(pool: &SqlitePool, id: &str, file_path: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE downloads
+         SET file_path = ?
+         WHERE id = ?",
+    )
+    .bind(file_path)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

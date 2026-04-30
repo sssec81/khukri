@@ -1,3 +1,5 @@
+mod media;
+
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -7,6 +9,7 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use khukri_engine::{db, spawn_download, DownloadConfig, DownloadProgress, DownloadStatus};
+use media::{should_use_ytdlp, MediaQuality, YtDlpJob};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::mpsc;
@@ -233,6 +236,28 @@ fn progress_event(
         source,
         output_path,
         message: None,
+    }
+}
+
+fn media_progress_event(
+    id: &str,
+    progress: &media::YtDlpProgress,
+    source: Option<String>,
+    output_path: Option<String>,
+) -> BridgeEvent {
+    BridgeEvent {
+        kind: "progress",
+        id: id.to_string(),
+        status: "active",
+        bytes_done: progress.bytes_done,
+        total_bytes: progress.total_bytes,
+        speed_bps: progress.speed_bps,
+        eta_seconds: progress.eta_seconds,
+        segments_done: 0,
+        segments_total: None,
+        source,
+        output_path,
+        message: Some(progress.phase.clone()),
     }
 }
 
@@ -534,7 +559,7 @@ async fn main() -> Result<()> {
                 url,
                 filename,
                 size: _size,
-                quality: _quality,
+                quality,
                 source,
                 page_url,
                 custom_headers,
@@ -544,9 +569,93 @@ async fn main() -> Result<()> {
                     .map(sanitize_filename)
                     .unwrap_or_else(|| filename_from_url(&url));
                 let output_path = output_root.join(&resolved_name);
+                let headers = browser_headers(page_url.as_deref(), custom_headers);
+
+                if should_use_ytdlp(source.as_deref(), quality.as_deref()) {
+                    let id = format!(
+                        "media-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                    );
+                    let job = YtDlpJob {
+                        id: id.clone(),
+                        url,
+                        output_path: output_path.clone(),
+                        quality: MediaQuality::parse(quality.as_deref()),
+                        headers,
+                    };
+                    let source_clone = source.clone();
+                    let path_display = output_path.display().to_string();
+                    let tx = writer_tx.clone();
+
+                    let _ = writer_tx.send(BridgeEvent {
+                        kind: "progress",
+                        id: id.clone(),
+                        status: "queued",
+                        bytes_done: 0,
+                        total_bytes: None,
+                        speed_bps: 0,
+                        eta_seconds: None,
+                        segments_done: 0,
+                        segments_total: None,
+                        source: source.clone(),
+                        output_path: Some(path_display.clone()),
+                        message: Some("starting yt-dlp".to_string()),
+                    });
+
+                    tokio::spawn(async move {
+                        match media::run_ytdlp(job.clone(), |progress| {
+                            let _ = tx.send(media_progress_event(
+                                &job.id,
+                                &progress,
+                                source_clone.clone(),
+                                Some(path_display.clone()),
+                            ));
+                        })
+                        .await
+                        {
+                            Ok(outcome) => {
+                                let _ = tx.send(BridgeEvent {
+                                    kind: "progress",
+                                    id: job.id.clone(),
+                                    status: "complete",
+                                    bytes_done: 0,
+                                    total_bytes: None,
+                                    speed_bps: 0,
+                                    eta_seconds: None,
+                                    segments_done: 0,
+                                    segments_total: None,
+                                    source: source.clone(),
+                                    output_path: Some(outcome.final_path.display().to_string()),
+                                    message: Some("yt-dlp complete".to_string()),
+                                });
+                            }
+                            Err(err) => {
+                                let _ = tx.send(BridgeEvent {
+                                    kind: "error",
+                                    id: job.id.clone(),
+                                    status: "failed",
+                                    bytes_done: 0,
+                                    total_bytes: None,
+                                    speed_bps: 0,
+                                    eta_seconds: None,
+                                    segments_done: 0,
+                                    segments_total: None,
+                                    source: source.clone(),
+                                    output_path: Some(path_display.clone()),
+                                    message: Some(err.to_string()),
+                                });
+                            }
+                        }
+                    });
+                    continue;
+                }
+
                 let mut config = DownloadConfig::new(&url, &output_path);
                 config.allowed_root = Some(output_root.clone());
-                config.custom_headers = browser_headers(page_url.as_deref(), custom_headers);
+                config.custom_headers = headers;
 
                 let handle = spawn_download(config, pool.clone());
                 let mut rx = handle.subscribe();
