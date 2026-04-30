@@ -108,15 +108,12 @@ fn canonicalize_with_nonexistent_tail(path: &Path) -> io::Result<PathBuf> {
             .to_os_string();
 
         tail.push(name);
-        cursor = cursor
-            .parent()
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "no existing ancestor found for output path",
-                )
-            })?;
+        cursor = cursor.parent().map(PathBuf::from).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no existing ancestor found for output path",
+            )
+        })?;
     }
 }
 
@@ -302,12 +299,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
 
         // The file itself does not exist — only the root directory does.
-        let mut cfg =
-            DownloadConfig::new("https://example.com/file.bin", root.join("subdir").join("file.bin"));
+        let mut cfg = DownloadConfig::new(
+            "https://example.com/file.bin",
+            root.join("subdir").join("file.bin"),
+        );
         cfg.allowed_root = Some(root.clone());
 
         // Should not error even though neither subdir/ nor file.bin exist.
-        assert!(cfg.validate().is_ok(), "validation failed for non-existent nested path inside root");
+        assert!(
+            cfg.validate().is_ok(),
+            "validation failed for non-existent nested path inside root"
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -337,15 +339,17 @@ mod tests {
             return; // Skip if symlink creation is not permitted.
         }
 
-        let mut cfg =
-            DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
+        let mut cfg = DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
         cfg.allowed_root = Some(root.clone());
 
         let result = cfg.validate();
         assert!(
             matches!(
                 result,
-                Err(KhukriError::InvalidConfig { field: "file_path", .. })
+                Err(KhukriError::InvalidConfig {
+                    field: "file_path",
+                    ..
+                })
             ),
             "Windows symlink escape should be rejected, got: {result:?}"
         );
@@ -375,15 +379,17 @@ mod tests {
         let link = root.join("escape");
         symlink(&outside, &link).unwrap();
 
-        let mut cfg =
-            DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
+        let mut cfg = DownloadConfig::new("https://example.com/file.bin", link.join("file.bin"));
         cfg.allowed_root = Some(root.clone());
 
         let result = cfg.validate();
         assert!(
             matches!(
                 result,
-                Err(KhukriError::InvalidConfig { field: "file_path", .. })
+                Err(KhukriError::InvalidConfig {
+                    field: "file_path",
+                    ..
+                })
             ),
             "symlink escape should be rejected, got: {result:?}"
         );

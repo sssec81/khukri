@@ -127,11 +127,11 @@ pub async fn set_download_status(pool: &SqlitePool, id: &str, status: &str) -> R
          SET status = ?, failure_reason = CASE WHEN ? = 'failed' THEN failure_reason ELSE NULL END
          WHERE id = ?",
     )
-        .bind(status)
-        .bind(status)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    .bind(status)
+    .bind(status)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -178,7 +178,11 @@ pub async fn set_download_status_where(
         return Ok(());
     }
     // Build `IN (?, ?, ...)` — sqlx doesn't support slice binding directly.
-    let placeholders = from_statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let placeholders = from_statuses
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "UPDATE downloads SET status = ?, failure_reason = NULL WHERE status IN ({placeholders})"
     );
@@ -300,12 +304,11 @@ pub async fn get_segment_formula_version(
     pool: &SqlitePool,
     download_id: &str,
 ) -> Result<Option<i64>> {
-    let row: Option<(Option<i64>,)> = sqlx::query_as(
-        "SELECT segment_formula_version FROM downloads WHERE id = ?",
-    )
-    .bind(download_id)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(Option<i64>,)> =
+        sqlx::query_as("SELECT segment_formula_version FROM downloads WHERE id = ?")
+            .bind(download_id)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.and_then(|(v,)| v))
 }
 
@@ -314,12 +317,10 @@ pub async fn set_segment_formula_version(
     download_id: &str,
     version: i64,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE downloads SET segment_formula_version = ? WHERE id = ?",
-    )
-    .bind(version)
-    .bind(download_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE downloads SET segment_formula_version = ? WHERE id = ?")
+        .bind(version)
+        .bind(download_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

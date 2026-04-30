@@ -76,6 +76,10 @@ pub fn should_use_ytdlp(source: Option<&str>, quality: Option<&str>) -> bool {
 
 pub fn build_arguments(job: &YtDlpJob) -> Vec<String> {
     let ffmpeg_binary = resolve_ffmpeg_binary().ok();
+    build_arguments_with_ffmpeg(job, ffmpeg_binary.as_deref())
+}
+
+fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "--no-config".to_string(),
         "--newline".to_string(),
@@ -169,7 +173,9 @@ pub fn resolve_ytdlp_binary() -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
-        .ok_or_else(|| anyhow::anyhow!("could not find bundled yt-dlp sidecar for {}", sidecar_name))
+        .ok_or_else(|| {
+            anyhow::anyhow!("could not find bundled yt-dlp sidecar for {}", sidecar_name)
+        })
 }
 
 pub fn resolve_ffmpeg_binary() -> Result<PathBuf> {
@@ -205,7 +211,9 @@ pub fn resolve_ffmpeg_binary() -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
-        .ok_or_else(|| anyhow::anyhow!("could not find bundled ffmpeg sidecar for {}", sidecar_name))
+        .ok_or_else(|| {
+            anyhow::anyhow!("could not find bundled ffmpeg sidecar for {}", sidecar_name)
+        })
 }
 
 pub async fn run_ytdlp<F>(job: YtDlpJob, mut on_progress: F) -> Result<YtDlpOutcome>
@@ -250,7 +258,10 @@ where
     stderr_task.await.context("stderr reader task failed")??;
 
     if !status.success() {
-        bail!("{}", format_media_failure(&status.to_string(), last_detail.as_deref()));
+        bail!(
+            "{}",
+            format_media_failure(&status.to_string(), last_detail.as_deref())
+        );
     }
 
     Ok(YtDlpOutcome {
@@ -279,8 +290,12 @@ fn format_selector(quality: MediaQuality, ffmpeg_available: bool) -> &'static st
 
     match quality {
         MediaQuality::Best => "best[acodec!=none][vcodec!=none]/best",
-        MediaQuality::P1080 => "best[height<=1080][acodec!=none][vcodec!=none]/best[height<=1080]/best",
-        MediaQuality::P720 => "best[height<=720][acodec!=none][vcodec!=none]/best[height<=720]/best",
+        MediaQuality::P1080 => {
+            "best[height<=1080][acodec!=none][vcodec!=none]/best[height<=1080]/best"
+        }
+        MediaQuality::P720 => {
+            "best[height<=720][acodec!=none][vcodec!=none]/best[height<=720]/best"
+        }
         MediaQuality::AudioOnly => "bestaudio/best",
     }
 }
@@ -291,9 +306,11 @@ fn parse_u64_like(value: Option<String>) -> Option<u64> {
         return None;
     }
 
-    raw.parse::<u64>()
-        .ok()
-        .or_else(|| raw.parse::<f64>().ok().map(|value| value.max(0.0).round() as u64))
+    raw.parse::<u64>().ok().or_else(|| {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| value.max(0.0).round() as u64)
+    })
 }
 
 fn parse_detail_line(line: &str) -> Option<String> {
@@ -376,7 +393,10 @@ fn app_data_dir() -> PathBuf {
             return PathBuf::from(data_home).join("khukri");
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".local").join("share").join("khukri");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("khukri");
         }
     }
 
@@ -438,11 +458,17 @@ mod tests {
     #[test]
     fn quality_specific_arguments_are_built() {
         let audio_args = build_arguments(&sample_job(MediaQuality::AudioOnly));
-        assert!(audio_args.windows(2).any(|part| part == ["-x", "--audio-format"]));
+        assert!(audio_args
+            .windows(2)
+            .any(|part| part == ["-x", "--audio-format"]));
         assert!(audio_args.contains(&"mp3".to_string()));
 
-        let hd_args = build_arguments(&sample_job(MediaQuality::P1080));
-        assert!(hd_args.contains(&"best[height<=1080]/bestvideo[height<=1080]+bestaudio/best".to_string()));
+        let hd_args = build_arguments_with_ffmpeg(
+            &sample_job(MediaQuality::P1080),
+            Some(Path::new("/tmp/ffmpeg")),
+        );
+        assert!(hd_args
+            .contains(&"best[height<=1080]/bestvideo[height<=1080]+bestaudio/best".to_string()));
     }
 
     #[test]

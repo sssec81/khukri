@@ -120,11 +120,12 @@ async fn linux_fallocate(file: &File, size: u64) -> Result<()> {
     use nix::errno::Errno;
     use nix::fcntl::{fallocate, FallocateFlags};
 
-    let file_clone = file.try_clone().await
-        .map_err(|_| KhukriError::Io(std::io::Error::new(
+    let file_clone = file.try_clone().await.map_err(|_| {
+        KhukriError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "failed to clone file for fallocate operation"
-        )))?;
+            "failed to clone file for fallocate operation",
+        ))
+    })?;
 
     tokio::task::spawn_blocking(move || {
         use std::os::unix::io::AsRawFd;

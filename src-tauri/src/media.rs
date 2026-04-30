@@ -39,7 +39,6 @@ impl MediaQuality {
             Self::AudioOnly => "bestaudio/best",
         }
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -162,14 +161,13 @@ pub fn ffmpeg_path() -> Option<PathBuf> {
 
 pub async fn log_ffmpeg_version() {
     let Some(binary) = ffmpeg_path() else {
-        tracing::info!("ffmpeg sidecar not found; media downloads will rely on yt-dlp without merge support");
+        tracing::info!(
+            "ffmpeg sidecar not found; media downloads will rely on yt-dlp without merge support"
+        );
         return;
     };
 
-    let output = Command::new(&binary)
-        .arg("-version")
-        .output()
-        .await;
+    let output = Command::new(&binary).arg("-version").output().await;
 
     match output {
         Ok(output) => {
@@ -384,8 +382,12 @@ fn format_selector(quality: MediaQuality, ffmpeg_available: bool) -> &'static st
 
     match quality {
         MediaQuality::Best => "best[acodec!=none][vcodec!=none]/best",
-        MediaQuality::P1080 => "best[height<=1080][acodec!=none][vcodec!=none]/best[height<=1080]/best",
-        MediaQuality::P720 => "best[height<=720][acodec!=none][vcodec!=none]/best[height<=720]/best",
+        MediaQuality::P1080 => {
+            "best[height<=1080][acodec!=none][vcodec!=none]/best[height<=1080]/best"
+        }
+        MediaQuality::P720 => {
+            "best[height<=720][acodec!=none][vcodec!=none]/best[height<=720]/best"
+        }
         MediaQuality::AudioOnly => "bestaudio/best",
     }
 }
@@ -433,9 +435,11 @@ fn parse_u64_like(value: Option<String>) -> Option<u64> {
         return None;
     }
 
-    raw.parse::<u64>()
-        .ok()
-        .or_else(|| raw.parse::<f64>().ok().map(|value| value.max(0.0).round() as u64))
+    raw.parse::<u64>().ok().or_else(|| {
+        raw.parse::<f64>()
+            .ok()
+            .map(|value| value.max(0.0).round() as u64)
+    })
 }
 
 async fn read_lines<R>(reader: R, tx: mpsc::UnboundedSender<String>) -> Result<(), std::io::Error>
@@ -554,28 +558,26 @@ mod tests {
 
     #[test]
     fn ffmpeg_override_is_forwarded_to_ytdlp() {
-        let previous = std::env::var_os("KHUKRI_FFMPEG_BIN");
         let temp_dir = std::env::temp_dir().join("khukri-ffmpeg-test");
         let _ = std::fs::create_dir_all(&temp_dir);
         let binary_path = temp_dir.join("ffmpeg.exe");
         let _ = std::fs::write(&binary_path, []);
-        std::env::set_var("KHUKRI_FFMPEG_BIN", &binary_path);
 
-        let args = build_arguments(&MediaJob {
-            id: "job-1".to_string(),
-            url: "https://example.com/watch?v=abc".to_string(),
-            output_path: PathBuf::from("D:/downloads/sample.bin"),
-            quality: MediaQuality::Best,
-            headers: Vec::new(),
-        });
+        let args = build_arguments(
+            &MediaJob {
+                id: "job-1".to_string(),
+                url: "https://example.com/watch?v=abc".to_string(),
+                output_path: PathBuf::from("D:/downloads/sample.bin"),
+                quality: MediaQuality::Best,
+                headers: Vec::new(),
+            },
+            Some(binary_path.as_path()),
+        );
 
         let expected_dir = binary_path.parent().unwrap().display().to_string();
-        assert!(args.windows(2).any(|part| part[0] == "--ffmpeg-location" && part[1] == expected_dir));
-
-        match previous {
-            Some(value) => std::env::set_var("KHUKRI_FFMPEG_BIN", value),
-            None => std::env::remove_var("KHUKRI_FFMPEG_BIN"),
-        }
+        assert!(args
+            .windows(2)
+            .any(|part| part[0] == "--ffmpeg-location" && part[1] == expected_dir));
 
         let _ = std::fs::remove_file(&binary_path);
         let _ = std::fs::remove_dir(&temp_dir);

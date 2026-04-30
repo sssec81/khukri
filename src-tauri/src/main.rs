@@ -235,11 +235,7 @@ fn parse_priority(value: Option<&str>) -> Priority {
 }
 
 fn infer_download_filename(url: &str) -> String {
-    let parsed = url
-        .split('?')
-        .next()
-        .unwrap_or(url)
-        .trim_end_matches('/');
+    let parsed = url.split('?').next().unwrap_or(url).trim_end_matches('/');
     let name = parsed
         .rsplit('/')
         .next()
@@ -252,11 +248,12 @@ fn infer_download_filename(url: &str) -> String {
 fn normalized_download_target(raw: &str, url: &str, prefer_directory: bool) -> PathBuf {
     let candidate = PathBuf::from(raw.trim());
     let raw = raw.trim();
-    let ends_with_separator = raw.ends_with(std::path::MAIN_SEPARATOR)
-        || raw.ends_with('/')
-        || raw.ends_with('\\');
-    let looks_like_directory =
-        prefer_directory || ends_with_separator || candidate.as_path().is_dir() || candidate.file_name().is_none();
+    let ends_with_separator =
+        raw.ends_with(std::path::MAIN_SEPARATOR) || raw.ends_with('/') || raw.ends_with('\\');
+    let looks_like_directory = prefer_directory
+        || ends_with_separator
+        || candidate.as_path().is_dir()
+        || candidate.file_name().is_none();
 
     if !looks_like_directory {
         return candidate;
@@ -348,7 +345,10 @@ fn map_progress_event(progress: &DownloadProgress) -> DownloadProgressEvent {
     }
 }
 
-fn request_with_settings(mut request: StartDownloadRequest, settings: &AppSettings) -> StartDownloadRequest {
+fn request_with_settings(
+    mut request: StartDownloadRequest,
+    settings: &AppSettings,
+) -> StartDownloadRequest {
     if request.file_path.trim().is_empty() {
         request.file_path = settings.general.default_download_path.clone();
     }
@@ -434,7 +434,8 @@ fn cleanup_download_file(path: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    std::fs::remove_file(target).map_err(|e| format!("failed to remove '{}': {e}", target.display()))
+    std::fs::remove_file(target)
+        .map_err(|e| format!("failed to remove '{}': {e}", target.display()))
 }
 
 async fn cleanup_download_file_for_id(pool: &SqlitePool, id: &str) -> Result<(), String> {
@@ -448,14 +449,20 @@ async fn cleanup_download_file_for_id(pool: &SqlitePool, id: &str) -> Result<(),
     Ok(())
 }
 
-async fn refresh_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
+async fn refresh_download_snapshot(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<DownloadListItem>, String> {
     db::get_download(pool, id)
         .await
         .map_err(|e| e.to_string())
         .map(|row| row.map(map_download_row))
 }
 
-async fn wait_for_download_snapshot(pool: &SqlitePool, id: &str) -> Result<Option<DownloadListItem>, String> {
+async fn wait_for_download_snapshot(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<Option<DownloadListItem>, String> {
     // A single read is sufficient: start_managed_download constructs the DB
     // row before spawning the progress task, so the row is available
     // immediately. The call site already has a synthesized fallback for the
@@ -498,7 +505,10 @@ fn sync_tray_menu_state(app: &tauri::AppHandle, queue: &[DownloadListItem]) -> R
 }
 
 #[cfg(not(desktop))]
-fn sync_tray_menu_state(_app: &tauri::AppHandle, _queue: &[DownloadListItem]) -> Result<(), String> {
+fn sync_tray_menu_state(
+    _app: &tauri::AppHandle,
+    _queue: &[DownloadListItem],
+) -> Result<(), String> {
     Ok(())
 }
 
@@ -563,7 +573,7 @@ async fn promote_pending_downloads_with_parts(
 
     loop {
         let max_concurrent = settings.lock().await.general.max_concurrent as usize;
-        
+
         // Lock active map and hold it to prevent race conditions
         let active_guard = active.lock().await;
         if active_guard.len() >= max_concurrent {
@@ -612,10 +622,7 @@ async fn promote_pending_downloads_with_parts(
     Ok(())
 }
 
-async fn promote_pending_downloads(
-    app: &tauri::AppHandle,
-    state: &AppState,
-) -> Result<(), String> {
+async fn promote_pending_downloads(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
     promote_pending_downloads_with_parts(
         app,
         state.pool.clone(),
@@ -643,7 +650,7 @@ async fn start_or_queue_download(
 
     // Acquire lock once and hold it through duplicate check and concurrency limit check
     let active_guard = active.lock().await;
-    
+
     if active_guard.contains_key(&requested_id) {
         drop(active_guard);
         return refresh_download_snapshot(&pool, &requested_id)
@@ -657,7 +664,7 @@ async fn start_or_queue_download(
         emit_queue_updated(&app, &pool).await?;
         return Ok(snapshot);
     }
-    
+
     drop(active_guard);
     start_managed_download(app, pool, active, cancelled, settings, request).await
 }
@@ -794,19 +801,23 @@ async fn start_managed_download(
         }
     });
 
-    let snapshot = wait_for_download_snapshot(&pool, &id).await?.unwrap_or_else(|| DownloadListItem {
-        id: id.clone(),
-        url: request.url.clone(),
-        file_path: output_path_string,
-        total_bytes: None,
-        status: "queued".to_string(),
-        priority: priority.as_str().to_string(),
-        throttle_bytes_per_sec: request.bytes_per_sec.and_then(|value| i64::try_from(value).ok()),
-        media_quality: request.quality.clone(),
-        request_source: request.source.clone(),
-        failure_reason: None,
-        created_at: 0,
-    });
+    let snapshot = wait_for_download_snapshot(&pool, &id)
+        .await?
+        .unwrap_or_else(|| DownloadListItem {
+            id: id.clone(),
+            url: request.url.clone(),
+            file_path: output_path_string,
+            total_bytes: None,
+            status: "queued".to_string(),
+            priority: priority.as_str().to_string(),
+            throttle_bytes_per_sec: request
+                .bytes_per_sec
+                .and_then(|value| i64::try_from(value).ok()),
+            media_quality: request.quality.clone(),
+            request_source: request.source.clone(),
+            failure_reason: None,
+            created_at: 0,
+        });
     emit_queue_updated(&app, &pool).await?;
     Ok(snapshot)
 }
@@ -903,14 +914,17 @@ async fn start_managed_media_download(
                             )
                             .await;
                         }
-                        let _ = db::set_download_status(&pool_for_task, &snapshot.id, "complete").await;
+                        let _ =
+                            db::set_download_status(&pool_for_task, &snapshot.id, "complete").await;
                     }
                     DownloadStatus::Paused => {
                         if cancelled_for_task.lock().await.remove(&snapshot.id) {
                             let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
-                            let _ = cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
+                            let _ =
+                                cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
                         } else {
-                            let _ = db::set_download_status(&pool_for_task, &snapshot.id, "paused").await;
+                            let _ = db::set_download_status(&pool_for_task, &snapshot.id, "paused")
+                                .await;
                         }
                     }
                     DownloadStatus::Failed => {
@@ -918,7 +932,8 @@ async fn start_managed_media_download(
                             .failure_reason()
                             .await
                             .unwrap_or_else(|| "yt-dlp download failed".to_string());
-                        let _ = db::set_download_failed(&pool_for_task, &snapshot.id, &reason).await;
+                        let _ =
+                            db::set_download_failed(&pool_for_task, &snapshot.id, &reason).await;
                     }
                     _ => {}
                 }
@@ -934,19 +949,23 @@ async fn start_managed_media_download(
         }
     });
 
-    let snapshot = wait_for_download_snapshot(&pool, &id).await?.unwrap_or(DownloadListItem {
-        id,
-        url: request.url,
-        file_path: output_path_string,
-        total_bytes: None,
-        status: "active".to_string(),
-        priority: priority.as_str().to_string(),
-        throttle_bytes_per_sec: request.bytes_per_sec.and_then(|value| i64::try_from(value).ok()),
-        media_quality: request.quality,
-        request_source: request.source,
-        failure_reason: None,
-        created_at: unix_now_secs(),
-    });
+    let snapshot = wait_for_download_snapshot(&pool, &id)
+        .await?
+        .unwrap_or(DownloadListItem {
+            id,
+            url: request.url,
+            file_path: output_path_string,
+            total_bytes: None,
+            status: "active".to_string(),
+            priority: priority.as_str().to_string(),
+            throttle_bytes_per_sec: request
+                .bytes_per_sec
+                .and_then(|value| i64::try_from(value).ok()),
+            media_quality: request.quality,
+            request_source: request.source,
+            failure_reason: None,
+            created_at: unix_now_secs(),
+        });
     emit_queue_updated(&app, &pool).await?;
     Ok(snapshot)
 }
@@ -970,7 +989,9 @@ async fn pause_all_downloads(app: &tauri::AppHandle, state: &AppState) -> Result
 }
 
 async fn resume_all_downloads(app: tauri::AppHandle, state: &AppState) -> Result<(), String> {
-    let rows = db::list_downloads(&state.pool).await.map_err(|e| e.to_string())?;
+    let rows = db::list_downloads(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
     for row in rows {
         if row.status != "paused" {
             continue;
@@ -1007,8 +1028,13 @@ fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let pause_all = MenuItem::with_id(app, "tray-pause-all", "Pause All", true, None::<&str>)?;
     let resume_all = MenuItem::with_id(app, "tray-resume-all", "Resume All", true, None::<&str>)?;
-    let open_dashboard =
-        MenuItem::with_id(app, "tray-open-dashboard", "Open Dashboard", true, None::<&str>)?;
+    let open_dashboard = MenuItem::with_id(
+        app,
+        "tray-open-dashboard",
+        "Open Dashboard",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
@@ -1266,10 +1292,7 @@ async fn check_ytdlp_updates_now(
 
 #[tauri::command]
 async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path = app
-        .dialog()
-        .file()
-        .blocking_pick_folder();
+    let path = app.dialog().file().blocking_pick_folder();
     Ok(path.map(|p| p.to_string()))
 }
 
@@ -1341,7 +1364,6 @@ pub fn run() {
             })
             .setup(|app| {
                 setup_tray(app)?;
-                let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     log_ffmpeg_version().await;
                 });

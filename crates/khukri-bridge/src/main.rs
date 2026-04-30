@@ -114,7 +114,10 @@ fn app_data_dir() -> PathBuf {
             return PathBuf::from(data_home).join("khukri");
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".local").join("share").join("khukri");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("khukri");
         }
     }
 
@@ -147,8 +150,12 @@ fn sanitize_filename(name: &str) -> String {
 fn filename_from_url(url: &str) -> String {
     // Strip query string and fragment before extracting the filename.
     let trimmed = url
-        .split('?').next().unwrap_or(url)
-        .split('#').next().unwrap_or(url)
+        .split('?')
+        .next()
+        .unwrap_or(url)
+        .split('#')
+        .next()
+        .unwrap_or(url)
         .trim_end_matches('/');
     let path_part = match trimmed.split_once("://") {
         Some((_, remainder)) => match remainder.split_once('/') {
@@ -272,8 +279,12 @@ async fn make_pool() -> Result<sqlx::SqlitePool> {
     // Match the WAL + busy-timeout settings used by the Tauri app so that
     // concurrent access between the bridge and the desktop app doesn't cause
     // "database is locked" errors.
-    sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await?;
-    sqlx::query("PRAGMA busy_timeout = 5000").execute(&pool).await?;
+    sqlx::query("PRAGMA journal_mode = WAL")
+        .execute(&pool)
+        .await?;
+    sqlx::query("PRAGMA busy_timeout = 5000")
+        .execute(&pool)
+        .await?;
     db::run_migrations(&pool).await?;
     Ok(pool)
 }
@@ -281,8 +292,8 @@ async fn make_pool() -> Result<sqlx::SqlitePool> {
 const PLACEHOLDER_ORIGIN: &str = "chrome-extension://replace-with-your-extension-id/";
 
 fn extension_origin_from_env() -> Result<String> {
-    let origin = std::env::var("KHUKRI_EXTENSION_ORIGIN")
-        .unwrap_or_else(|_| PLACEHOLDER_ORIGIN.to_string());
+    let origin =
+        std::env::var("KHUKRI_EXTENSION_ORIGIN").unwrap_or_else(|_| PLACEHOLDER_ORIGIN.to_string());
     validate_extension_origin(&origin)?;
     Ok(origin)
 }
@@ -409,8 +420,13 @@ mod tests {
     #[test]
     fn referer_injected_when_absent() {
         let result = browser_headers(Some("https://example.com/page"), HashMap::new());
-        let referer = result.iter().find(|(k, _)| k.eq_ignore_ascii_case("Referer"));
-        assert_eq!(referer.map(|(_, v)| v.as_str()), Some("https://example.com/page"));
+        let referer = result
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Referer"));
+        assert_eq!(
+            referer.map(|(_, v)| v.as_str()),
+            Some("https://example.com/page")
+        );
     }
 
     #[test]
@@ -418,7 +434,10 @@ mod tests {
         let mut raw = HashMap::new();
         raw.insert("Referer".to_string(), "https://custom.com/".to_string());
         let result = browser_headers(Some("https://page.com/"), raw);
-        let count = result.iter().filter(|(k, _)| k.eq_ignore_ascii_case("Referer")).count();
+        let count = result
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("Referer"))
+            .count();
         assert_eq!(count, 1);
         assert_eq!(result[0].1, "https://custom.com/");
     }
@@ -428,12 +447,18 @@ mod tests {
     #[test]
     fn placeholder_origin_is_rejected() {
         assert!(validate_extension_origin(PLACEHOLDER_ORIGIN).is_err());
-        assert!(validate_extension_origin("chrome-extension://replace-with-your-extension-id/extra").is_err());
+        assert!(validate_extension_origin(
+            "chrome-extension://replace-with-your-extension-id/extra"
+        )
+        .is_err());
     }
 
     #[test]
     fn valid_chrome_origin_is_accepted() {
-        assert!(validate_extension_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop/").is_ok());
+        assert!(
+            validate_extension_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop/")
+                .is_ok()
+        );
     }
 
     #[test]
@@ -467,7 +492,10 @@ mod tests {
 
     #[test]
     fn filename_from_url_strips_query() {
-        assert_eq!(filename_from_url("https://example.com/file.zip?token=abc"), "file.zip");
+        assert_eq!(
+            filename_from_url("https://example.com/file.zip?token=abc"),
+            "file.zip"
+        );
     }
 
     #[test]
@@ -477,17 +505,24 @@ mod tests {
 
     #[test]
     fn filename_from_url_strips_fragment() {
-        assert_eq!(filename_from_url("https://example.com/file.zip#section"), "file.zip");
+        assert_eq!(
+            filename_from_url("https://example.com/file.zip#section"),
+            "file.zip"
+        );
     }
 
     #[test]
     fn filename_from_url_strips_query_and_fragment() {
-        assert_eq!(filename_from_url("https://example.com/file.zip?token=abc#anchor"), "file.zip");
+        assert_eq!(
+            filename_from_url("https://example.com/file.zip?token=abc#anchor"),
+            "file.zip"
+        );
     }
 }
 
 fn should_register(args: &[String]) -> bool {
-    args.iter().any(|arg| arg == "--register" || arg == "--repair")
+    args.iter()
+        .any(|arg| arg == "--register" || arg == "--repair")
 }
 
 #[tokio::main]
@@ -519,16 +554,14 @@ async fn main() -> Result<()> {
     });
 
     let (read_tx, mut read_rx) = mpsc::unbounded_channel::<Result<Incoming>>();
-    thread::spawn(move || {
-        loop {
-            let next = read_message();
-            let should_stop = next.is_err();
-            if read_tx.send(next).is_err() {
-                break;
-            }
-            if should_stop {
-                break;
-            }
+    thread::spawn(move || loop {
+        let next = read_message();
+        let should_stop = next.is_err();
+        if read_tx.send(next).is_err() {
+            break;
+        }
+        if should_stop {
+            break;
         }
     });
 
@@ -718,6 +751,8 @@ async fn main() -> Result<()> {
     }
 
     drop(writer_tx);
-    writer_thread.join().map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
+    writer_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
     Ok(())
 }

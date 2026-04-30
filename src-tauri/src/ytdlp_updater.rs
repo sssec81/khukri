@@ -61,7 +61,11 @@ pub async fn maybe_update_ytdlp(
             return Ok(());
         }
 
-        let backoff = if current.ytdlp_last_rate_limit { RATE_LIMIT_BACKOFF_SECS } else { UPDATE_INTERVAL_SECS };
+        let backoff = if current.ytdlp_last_rate_limit {
+            RATE_LIMIT_BACKOFF_SECS
+        } else {
+            UPDATE_INTERVAL_SECS
+        };
         force
             || current
                 .ytdlp_last_check
@@ -126,12 +130,21 @@ pub async fn maybe_update_ytdlp(
     let checksum_asset = release
         .assets
         .iter()
-        .find(|asset| asset.name.eq_ignore_ascii_case("SHA2-256SUMS") || asset.name.contains("SHA2-256SUMS"))
+        .find(|asset| {
+            asset.name.eq_ignore_ascii_case("SHA2-256SUMS") || asset.name.contains("SHA2-256SUMS")
+        })
         .ok_or_else(|| "yt-dlp release checksums asset not found".to_string());
     let checksum_asset = match checksum_asset {
         Ok(asset) => asset,
         Err(error) => {
-            handle_failure(&app, &settings, error, Some(release.tag_name.clone()), false).await?;
+            handle_failure(
+                &app,
+                &settings,
+                error,
+                Some(release.tag_name.clone()),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -139,11 +152,20 @@ pub async fn maybe_update_ytdlp(
         .assets
         .iter()
         .find(|asset| asset.name == asset_name)
-        .ok_or_else(|| format!("yt-dlp release does not include asset for this platform: {asset_name}"));
+        .ok_or_else(|| {
+            format!("yt-dlp release does not include asset for this platform: {asset_name}")
+        });
     let binary_asset = match binary_asset {
         Ok(asset) => asset,
         Err(error) => {
-            handle_failure(&app, &settings, error, Some(release.tag_name.clone()), false).await?;
+            handle_failure(
+                &app,
+                &settings,
+                error,
+                Some(release.tag_name.clone()),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -154,7 +176,14 @@ pub async fn maybe_update_ytdlp(
     let checksums = match checksums {
         Ok(body) => body,
         Err(error) => {
-            handle_failure(&app, &settings, format!("yt-dlp checksum download failed: {error}"), Some(release.tag_name.clone()), false).await?;
+            handle_failure(
+                &app,
+                &settings,
+                format!("yt-dlp checksum download failed: {error}"),
+                Some(release.tag_name.clone()),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -163,7 +192,14 @@ pub async fn maybe_update_ytdlp(
     let expected_sha = match expected_sha {
         Ok(value) => value,
         Err(error) => {
-            handle_failure(&app, &settings, error, Some(release.tag_name.clone()), false).await?;
+            handle_failure(
+                &app,
+                &settings,
+                error,
+                Some(release.tag_name.clone()),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -173,7 +209,14 @@ pub async fn maybe_update_ytdlp(
     let binary_bytes = match binary_bytes {
         Ok(bytes) => bytes,
         Err(error) => {
-            handle_failure(&app, &settings, format!("yt-dlp binary download failed: {error}"), Some(release.tag_name.clone()), false).await?;
+            handle_failure(
+                &app,
+                &settings,
+                format!("yt-dlp binary download failed: {error}"),
+                Some(release.tag_name.clone()),
+                false,
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -281,7 +324,10 @@ async fn download_bytes(url: &str) -> Result<Vec<u8>, reqwest::Error> {
 fn client() -> Result<reqwest::Client, reqwest::Error> {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static("Khukri/0.1.0"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
     reqwest::Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(30))
@@ -380,7 +426,10 @@ async fn run_canary(path: &Path) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err(format!("canary execution failed with status {}", output.status));
+        return Err(format!(
+            "canary execution failed with status {}",
+            output.status
+        ));
     }
     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if version.is_empty() {
@@ -440,7 +489,10 @@ fn platform_release_asset_name() -> Result<&'static str, String> {
     {
         return Ok("yt-dlp_linux");
     }
-    #[cfg(all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(all(
+        target_os = "macos",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     {
         return Ok("yt-dlp_macos");
     }

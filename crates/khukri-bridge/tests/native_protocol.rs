@@ -4,13 +4,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::Response,
-    routing::get,
-    Router,
-};
+use axum::{extract::State, http::HeaderMap, response::Response, routing::get, Router};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
@@ -250,7 +244,9 @@ async fn test_native_bridge_queues_and_downloads_10mb() {
         }
     };
 
-    let output_path = final_event.output_path.expect("bridge did not report output path");
+    let output_path = final_event
+        .output_path
+        .expect("bridge did not report output path");
     let output = std::fs::read(&output_path).expect("missing downloaded file");
     assert_eq!(output.len(), data.len());
     assert_eq!(sha256(&output), expected_hash);

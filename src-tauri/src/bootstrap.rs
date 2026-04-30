@@ -27,7 +27,10 @@ pub fn app_data_dir() -> PathBuf {
             return PathBuf::from(data_home).join("khukri");
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".local").join("share").join("khukri");
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("khukri");
         }
     }
 

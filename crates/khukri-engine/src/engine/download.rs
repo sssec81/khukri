@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
-use reqwest::Client;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -151,11 +151,11 @@ impl ProgressState {
         let bytes_done = self.bytes_done.load(Ordering::Relaxed);
         let segments_done_val = self.segments_done.load(Ordering::Relaxed);
         let segments_total_val = self.segments_total.load(Ordering::Relaxed);
-        
+
         self.edit_status(|p| {
             let elapsed_secs = started_at.elapsed().as_secs_f64().max(0.001);
             let elapsed_ms = (elapsed_secs * 1000.0) as u64;
-            
+
             // Use sliding window for speed: calculate speed over last 10 seconds, but at minimum
             // use at least 1 second of data to avoid spiky measurements
             let effective_window_ms = if elapsed_ms > SPEED_WINDOW_SECS * 1000 {
@@ -166,14 +166,14 @@ impl ProgressState {
                 // Within first second, use cumulative
                 elapsed_ms.max(1)
             };
-            
+
             let effective_secs = (effective_window_ms as f64) / 1000.0;
             let speed_bps = if effective_secs > 0.1 {
                 (bytes_done as f64 / effective_secs) as u64
             } else {
                 0
             };
-            
+
             let eta_seconds = p.total_bytes.and_then(|total| {
                 if speed_bps == 0 || bytes_done >= total {
                     None
@@ -325,11 +325,11 @@ async fn start_download_internal(
             Ok(resp)
         }
     })
-    .await {
+    .await
+    {
         Ok(head) => head,
         Err(e) => {
-            db::set_download_failed(&pool, &download_id, &e.to_string())
-                .await?;
+            db::set_download_failed(&pool, &download_id, &e.to_string()).await?;
             if let Some(p) = &progress {
                 p.set_status(DownloadStatus::Failed);
             }
@@ -374,8 +374,7 @@ async fn start_download_internal(
     // ── 3. Prepare output directory ───────────────────────────────────────────
     if let Some(parent) = config.file_path.parent() {
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            db::set_download_failed(&pool, &download_id, &e.to_string())
-                .await?;
+            db::set_download_failed(&pool, &download_id, &e.to_string()).await?;
             if let Some(p) = &progress {
                 p.set_status(DownloadStatus::Failed);
             }
@@ -461,8 +460,7 @@ async fn start_download_internal(
             Err(KhukriError::Cancelled)
         }
         Err(e) => {
-            db::set_download_failed(&pool, &download_id, &e.to_string())
-                .await?;
+            db::set_download_failed(&pool, &download_id, &e.to_string()).await?;
             if let Some(p) = &progress {
                 p.set_status(DownloadStatus::Failed);
             }
@@ -510,10 +508,7 @@ async fn segmented_download(
         .filter(|row| row.completed != 0)
         .map(segment_len)
         .sum::<u64>();
-    let completed_segments = existing
-        .iter()
-        .filter(|row| row.completed != 0)
-        .count() as u32;
+    let completed_segments = existing.iter().filter(|row| row.completed != 0).count() as u32;
 
     if !resume_mode {
         db::delete_segments(pool, download_id).await?;
@@ -524,8 +519,7 @@ async fn segmented_download(
     if resume_mode {
         if let Some(p) = &progress {
             p.bytes_done.store(completed_bytes, Ordering::Relaxed);
-            p.segments_done
-                .store(completed_segments, Ordering::Relaxed);
+            p.segments_done.store(completed_segments, Ordering::Relaxed);
             p.emit(DownloadStatus::Active);
         }
     }
