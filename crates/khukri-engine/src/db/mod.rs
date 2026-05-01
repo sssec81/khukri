@@ -48,6 +48,7 @@ pub struct SegmentRow {
     pub start_byte: i64,
     pub end_byte: i64,
     pub completed: i64, // 0 | 1
+    pub downloaded_bytes: i64,
 }
 
 impl<'r> sqlx::FromRow<'r, SqliteRow> for SegmentRow {
@@ -58,6 +59,7 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for SegmentRow {
             start_byte: row.try_get("start_byte")?,
             end_byte: row.try_get("end_byte")?,
             completed: row.try_get("completed")?,
+            downloaded_bytes: row.try_get("downloaded_bytes")?,
         })
     }
 }
@@ -247,8 +249,8 @@ pub async fn insert_segments(
     let mut tx = pool.begin().await?;
     for (start, end) in segments {
         sqlx::query(
-            "INSERT INTO segments (download_id, start_byte, end_byte, completed)
-             VALUES (?, ?, ?, 0)",
+            "INSERT INTO segments (download_id, start_byte, end_byte, completed, downloaded_bytes)
+             VALUES (?, ?, ?, 0, 0)",
         )
         .bind(download_id)
         .bind(*start as i64) // i64 cast safe: no filesystem supports > 9.2 EB offsets
@@ -269,10 +271,34 @@ pub async fn delete_segments(pool: &SqlitePool, download_id: &str) -> Result<()>
 }
 
 pub async fn mark_segment_complete(pool: &SqlitePool, segment_id: i64) -> Result<()> {
-    sqlx::query("UPDATE segments SET completed = 1 WHERE id = ?")
-        .bind(segment_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE segments
+         SET completed = 1,
+             downloaded_bytes = end_byte - start_byte + 1
+         WHERE id = ?",
+    )
+    .bind(segment_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_segment_downloaded_bytes(
+    pool: &SqlitePool,
+    segment_id: i64,
+    downloaded_bytes: u64,
+) -> Result<()> {
+    #[allow(clippy::cast_possible_wrap)]
+    let downloaded_bytes = downloaded_bytes as i64;
+    sqlx::query(
+        "UPDATE segments
+         SET downloaded_bytes = MIN(?, end_byte - start_byte + 1)
+         WHERE id = ? AND completed = 0",
+    )
+    .bind(downloaded_bytes)
+    .bind(segment_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

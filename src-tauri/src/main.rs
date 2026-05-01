@@ -34,6 +34,8 @@ use crate::ytdlp_updater::{maybe_update_ytdlp, spawn_background_updater};
 
 const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const TASK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+const TASK_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -268,7 +270,8 @@ fn normalize_output_path(raw: &str, settings: &AppSettings, url: &str) -> PathBu
         return normalized_download_target(&settings.general.default_download_path, url, true);
     }
 
-    normalized_download_target(trimmed, url, false)
+    let is_default_directory = trimmed == settings.general.default_download_path.trim();
+    normalized_download_target(trimmed, url, is_default_directory)
 }
 
 fn status_label(status: DownloadStatus) -> &'static str {
@@ -349,9 +352,6 @@ fn request_with_settings(
     mut request: StartDownloadRequest,
     settings: &AppSettings,
 ) -> StartDownloadRequest {
-    if request.file_path.trim().is_empty() {
-        request.file_path = settings.general.default_download_path.clone();
-    }
     if request.override_threads.is_none() {
         request.override_threads = settings.performance.thread_override;
     }
@@ -633,6 +633,25 @@ async fn promote_pending_downloads(app: &tauri::AppHandle, state: &AppState) -> 
     .await
 }
 
+async fn wait_until_inactive(
+    active: &Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    id: &str,
+    timeout: Duration,
+) -> bool {
+    let started = Instant::now();
+    loop {
+        if !active.lock().await.contains_key(id) {
+            return true;
+        }
+
+        if started.elapsed() >= timeout {
+            return false;
+        }
+
+        tokio::time::sleep(TASK_SETTLE_POLL_INTERVAL).await;
+    }
+}
+
 async fn start_or_queue_download(
     app: tauri::AppHandle,
     pool: SqlitePool,
@@ -751,6 +770,9 @@ async fn start_managed_download(
     .await
     .map_err(|e| e.to_string())?;
 
+    db::set_download_status(&pool, &id, "active")
+        .await
+        .map_err(|e| e.to_string())?;
     cancelled.lock().await.remove(&id);
     active.lock().await.insert(id.clone(), managed);
 
@@ -971,18 +993,25 @@ async fn start_managed_media_download(
 }
 
 async fn pause_all_downloads(app: &tauri::AppHandle, state: &AppState) -> Result<(), String> {
-    let downloads: Vec<ManagedDownload> = {
+    let downloads: Vec<(String, ManagedDownload)> = {
         let active = state.active.lock().await;
-        active.values().cloned().collect()
+        active
+            .iter()
+            .map(|(id, download)| (id.clone(), download.clone()))
+            .collect()
     };
 
-    for download in downloads {
+    for (_, download) in &downloads {
         download.task.cancel().await;
     }
 
     db::set_download_status_where(&state.pool, &["active", "queued"], "paused")
         .await
         .map_err(|e| e.to_string())?;
+
+    for (id, _) in &downloads {
+        let _ = wait_until_inactive(&state.active, id, TASK_SETTLE_TIMEOUT).await;
+    }
 
     emit_queue_updated(app, &state.pool).await?;
     Ok(())
@@ -1127,6 +1156,11 @@ async fn pause_download(
 
     if let Some(download) = handle {
         download.task.cancel().await;
+        db::set_download_status(&state.pool, &id, "paused")
+            .await
+            .map_err(|e| e.to_string())?;
+        let _ = wait_until_inactive(&state.active, &id, TASK_SETTLE_TIMEOUT).await;
+        let _ = emit_queue_updated(&app, &state.pool).await;
         return Ok(());
     }
 
@@ -1143,16 +1177,25 @@ async fn resume_download(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<DownloadListItem, String> {
-    if state.active.lock().await.contains_key(&id) {
-        return refresh_download_snapshot(&state.pool, &id)
-            .await?
-            .ok_or_else(|| format!("download not found: {id}"));
-    }
-
-    let row = db::get_download(&state.pool, &id)
+    let mut row = db::get_download(&state.pool, &id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("download not found: {id}"))?;
+
+    if state.active.lock().await.contains_key(&id) {
+        if row.status != "paused" {
+            return Ok(map_download_row(row));
+        }
+
+        if !wait_until_inactive(&state.active, &id, TASK_SETTLE_TIMEOUT).await {
+            return Err("download is still pausing; try resume again in a moment".to_string());
+        }
+
+        row = db::get_download(&state.pool, &id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("download not found: {id}"))?;
+    }
 
     if row.status == "active" || row.status == "queued" {
         return Ok(map_download_row(row));
@@ -1329,6 +1372,45 @@ fn app_pool_config() -> DbConfig {
     DbConfig {
         url: format!("sqlite:{}?mode=rwc", data_dir.join("state.db").display()),
         max_connections: 5,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_with_default_dir(default_dir: PathBuf) -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.general.default_download_path = default_dir.display().to_string();
+        settings
+    }
+
+    #[test]
+    fn empty_output_uses_default_directory_and_url_filename() {
+        let default_dir = std::env::temp_dir().join("khukri-default-output");
+        let settings = settings_with_default_dir(default_dir.clone());
+
+        let path = normalize_output_path(
+            "",
+            &settings,
+            "https://example.com/files/sample.bin?token=abc",
+        );
+
+        assert_eq!(path, default_dir.join("sample.bin"));
+    }
+
+    #[test]
+    fn explicit_default_directory_value_is_treated_as_directory() {
+        let default_dir = std::env::temp_dir().join("khukri-default-output");
+        let settings = settings_with_default_dir(default_dir.clone());
+
+        let path = normalize_output_path(
+            &settings.general.default_download_path,
+            &settings,
+            "https://example.com/files/sample.bin",
+        );
+
+        assert_eq!(path, default_dir.join("sample.bin"));
     }
 }
 

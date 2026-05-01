@@ -86,6 +86,7 @@ const FALLBACK_STRINGS = {
 };
 
 const progressById = new Map();
+const pendingActions = new Set();
 let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
@@ -321,6 +322,7 @@ function renderQueue(items) {
     const action = rowPrimaryAction(item);
     const canCancel = ["active", "queued", "paused"].includes(item.liveStatus);
     const hasPrimaryAction = action !== "none";
+    const isPending = pendingActions.has(item.id);
 
     let actionLabel;
     if (action === "open") {
@@ -350,6 +352,7 @@ function renderQueue(items) {
     const escapedActionLabel = htmlEscape(actionLabel);
     const escapedCancelLabel = htmlEscape(strings["downloads.actionCancel"]);
     const escapedFailureLabel = htmlEscape(strings["downloads.failureLabel"]);
+    const pendingAttrs = isPending ? " disabled aria-disabled=\"true\"" : "";
 
     return `
       <article class="download-item" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" data-status="${htmlEscape(liveStatus)}" aria-label="${escapedBaseName}">
@@ -363,9 +366,9 @@ function renderQueue(items) {
             <span class="pill pill--${liveStatus}">${htmlEscape(liveStatus)}</span>
             <div class="row-actions">
               ${hasPrimaryAction
-        ? `<button class="row-btn row-action" type="button" data-action="${htmlEscape(action)}" data-id="${escapedId}">${escapedActionLabel}</button>`
+        ? `<button class="row-btn row-action" type="button" data-action="${htmlEscape(action)}" data-id="${escapedId}"${pendingAttrs}>${escapedActionLabel}</button>`
         : ""}
-              ${canCancel ? `<button class="row-btn row-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}">${escapedCancelLabel}</button>` : ""}
+              ${canCancel ? `<button class="row-btn row-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${escapedCancelLabel}</button>` : ""}
             </div>
           </div>
           <div class="row-mid">
@@ -429,9 +432,6 @@ function applyTheme(settings) {
 
 function syncDownloadDefaults(settings) {
   const outputPath = document.getElementById("outputPath");
-  if (!outputPath.value.trim()) {
-    outputPath.value = settings.general.defaultDownloadPath || "";
-  }
   outputPath.placeholder = settings.general.defaultDownloadPath || outputPath.placeholder;
 
   const throttle = document.getElementById("throttle");
@@ -522,12 +522,16 @@ async function handleRowAction(action, id) {
   if (!item) {
     return;
   }
+  if (pendingActions.has(id)) {
+    return;
+  }
 
   const previousQueue = currentQueue.map((entry) => ({ ...entry }));
   const previousProgress = progressById.has(id)
     ? { ...progressById.get(id) }
     : undefined;
 
+  pendingActions.add(id);
   try {
     if (action === "pause") {
       updateLocalDownloadState(id, (entry) => ({ ...entry, status: "paused" }));
@@ -535,8 +539,8 @@ async function handleRowAction(action, id) {
       renderQueue(currentQueue);
       await invoke("pause_download", { id });
     } else if (action === "resume") {
+      progressById.delete(id);
       updateLocalDownloadState(id, (entry) => ({ ...entry, status: "queued" }));
-      setOptimisticProgress(id, "queued");
       renderQueue(currentQueue);
       await invoke("resume_download", { id });
     } else if (action === "cancel") {
@@ -561,6 +565,9 @@ async function handleRowAction(action, id) {
     }
     renderQueue(currentQueue);
     throw error;
+  } finally {
+    pendingActions.delete(id);
+    renderQueue(currentQueue);
   }
 
   setStatusReady(document.getElementById("formStatus"), strings["status.ready"]);
@@ -798,7 +805,10 @@ async function main() {
       if (event.payload?.id) {
         const previous = progressById.get(event.payload.id);
         const isTerminal = ["paused", "failed", "complete", "cancelled"].includes(event.payload.status);
-        if (!previous || event.payload.bytesDone >= previous.bytesDone || isTerminal) {
+        const resumesFromTerminal = previous
+          && ["paused", "failed", "complete", "cancelled"].includes(previous.status)
+          && ["queued", "active"].includes(event.payload.status);
+        if (!previous || event.payload.bytesDone >= previous.bytesDone || isTerminal || resumesFromTerminal) {
           progressById.set(event.payload.id, event.payload);
         }
         if (["failed", "complete", "cancelled"].includes(event.payload.status)) {

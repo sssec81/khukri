@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use axum::{
@@ -148,6 +148,12 @@ struct CountedRangeState {
     range_calls: Arc<AtomicU32>,
 }
 
+#[derive(Clone)]
+struct RecordedRangeState {
+    data: Arc<Vec<u8>>,
+    ranges: Arc<Mutex<Vec<String>>>,
+}
+
 async fn flaky_handler(
     headers: HeaderMap,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
@@ -185,6 +191,19 @@ async fn counted_range_handler(
 ) -> Response<axum::body::Body> {
     if headers.get("range").is_some() {
         s.range_calls.fetch_add(1, Ordering::SeqCst);
+    }
+    range_handler(headers, State(s.data)).await
+}
+
+async fn recorded_range_handler(
+    headers: HeaderMap,
+    State(s): State<RecordedRangeState>,
+) -> Response<axum::body::Body> {
+    if let Some(range) = headers.get("range") {
+        s.ranges
+            .lock()
+            .unwrap()
+            .push(range.to_str().unwrap_or("").to_string());
     }
     range_handler(headers, State(s.data)).await
 }
@@ -365,7 +384,7 @@ async fn test_resume_download_fetches_only_incomplete_segments() {
     .await
     .expect("segment row not found");
 
-    sqlx::query("UPDATE segments SET completed = 0 WHERE id = ?")
+    sqlx::query("UPDATE segments SET completed = 0, downloaded_bytes = 0 WHERE id = ?")
         .bind(segment_id)
         .execute(&pool)
         .await
@@ -385,7 +404,78 @@ async fn test_resume_download_fetches_only_incomplete_segments() {
     assert_eq!(sha256(&got), sha256(&data));
 }
 
-/// 6. Progress API — spawned downloads expose real-time state and terminal status.
+/// 6. Partial resume flow — resume starts at the persisted byte offset inside an incomplete segment.
+#[tokio::test]
+async fn test_resume_partial_segment_starts_at_persisted_offset() {
+    let data = test_data();
+    let ranges = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    let addr = spawn_server(
+        Router::new()
+            .route("/file", get(recorded_range_handler))
+            .with_state(RecordedRangeState {
+                data: data.clone(),
+                ranges: ranges.clone(),
+            }),
+    )
+    .await;
+
+    let out = tmp("khukri_it_partial_resume.bin");
+    let _ = std::fs::remove_file(&out);
+    let pool = make_pool("partial_resume").await;
+    let url = format!("http://{addr}/file");
+
+    start_download(cfg(url.clone(), &out), pool.clone())
+        .await
+        .expect("initial download failed");
+
+    ranges.lock().unwrap().clear();
+
+    let download_id: String =
+        sqlx::query_scalar("SELECT id FROM downloads WHERE url = ? AND file_path = ?")
+            .bind(&url)
+            .bind(out.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("download row not found");
+
+    let (segment_id, start_byte): (i64, i64) = sqlx::query_as(
+        "SELECT id, start_byte FROM segments WHERE download_id = ? ORDER BY start_byte LIMIT 1",
+    )
+    .bind(&download_id)
+    .fetch_one(&pool)
+    .await
+    .expect("segment row not found");
+
+    let partial_bytes = 512 * 1024_i64;
+    sqlx::query("UPDATE segments SET completed = 0, downloaded_bytes = ? WHERE id = ?")
+        .bind(partial_bytes)
+        .bind(segment_id)
+        .execute(&pool)
+        .await
+        .expect("failed to mark segment partially downloaded");
+
+    start_download(cfg(url, &out), pool.clone())
+        .await
+        .expect("partial resume download failed");
+
+    let range_headers = ranges.lock().unwrap().clone();
+    assert_eq!(
+        range_headers.len(),
+        1,
+        "partial resume should fetch only the unfinished byte range"
+    );
+    assert!(
+        range_headers[0].starts_with(&format!("bytes={}-", start_byte + partial_bytes)),
+        "partial resume should start from persisted segment offset, got {}",
+        range_headers[0]
+    );
+
+    let got = std::fs::read(&out).expect("output file missing");
+    assert_eq!(sha256(&got), sha256(&data));
+}
+
+/// 7. Progress API — spawned downloads expose real-time state and terminal status.
 #[tokio::test]
 async fn test_spawn_download_reports_progress() {
     let data = test_data();

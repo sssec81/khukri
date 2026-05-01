@@ -25,6 +25,7 @@ use crate::error::{KhukriError, Result};
 type Bucket = Arc<Mutex<TokenBucket>>;
 const STREAM_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 const SPEED_WINDOW_SECS: u64 = 10;
+const SEGMENT_PROGRESS_FLUSH_BYTES: u64 = 1024 * 1024;
 
 fn build_header_map(custom_headers: &[(String, String)]) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -503,11 +504,7 @@ async fn segmented_download(
     let resume_mode = can_reuse_segments(&existing, &seg_pairs)
         && file_exists
         && stored_version == Some(SEGMENT_FORMULA_VERSION);
-    let completed_bytes = existing
-        .iter()
-        .filter(|row| row.completed != 0)
-        .map(segment_len)
-        .sum::<u64>();
+    let completed_bytes = existing.iter().map(segment_downloaded_bytes).sum::<u64>();
     let completed_segments = existing.iter().filter(|row| row.completed != 0).count() as u32;
 
     if !resume_mode {
@@ -567,8 +564,18 @@ async fn segmented_download(
 
         handles.push(tokio::spawn(async move {
             let seg_id = seg_row.id;
-            let start = seg_row.start_byte as u64;
+            let segment_start = seg_row.start_byte as u64;
             let end = seg_row.end_byte as u64;
+            let initial_downloaded = segment_downloaded_bytes(&seg_row);
+            let segment_length = segment_len(&seg_row);
+
+            if initial_downloaded >= segment_length {
+                db::mark_segment_complete(&pool, seg_id).await?;
+                if let Some(p) = &progress {
+                    p.mark_segment_done();
+                }
+                return Ok::<(), KhukriError>(());
+            }
 
             if cancel.is_cancelled() {
                 return Err(KhukriError::Cancelled);
@@ -581,6 +588,7 @@ async fn segmented_download(
                 let client = client.clone();
                 let url = url.clone();
                 let file_path = file_path.clone();
+                let pool = pool.clone();
                 let bucket = bucket.clone();
                 let cancel = cancel.clone();
                 let fail_fast = fail_fast.clone();
@@ -597,8 +605,11 @@ async fn segmented_download(
                         &client,
                         &url,
                         &file_path,
-                        start,
+                        &pool,
+                        seg_id,
+                        segment_start,
                         end,
+                        initial_downloaded,
                         bucket,
                         &cancel,
                         &fail_fast,
@@ -622,7 +633,7 @@ async fn segmented_download(
                     if !matches!(e, KhukriError::Cancelled | KhukriError::Aborted) {
                         fail_fast.cancel();
                     }
-                    error!("Segment [{start}-{end}] failed: {e}");
+                    error!("Segment [{segment_start}-{end}] failed: {e}");
                     Err(e)
                 }
             }
@@ -815,8 +826,11 @@ async fn fetch_segment(
     client: &Client,
     url: &str,
     file_path: &std::path::Path,
-    start: u64,
+    pool: &SqlitePool,
+    segment_id: i64,
+    segment_start: u64,
     end: u64,
+    initial_downloaded: u64,
     bucket: Option<Bucket>,
     cancel: &CancellationToken,
     fail_fast: &CancellationToken,
@@ -828,6 +842,11 @@ async fn fetch_segment(
     }
     if fail_fast.is_cancelled() {
         return Err(KhukriError::Aborted);
+    }
+
+    let start = segment_start.saturating_add(initial_downloaded);
+    if start > end {
+        return Ok(());
     }
 
     let response = client
@@ -865,15 +884,28 @@ async fn fetch_segment(
     file.seek(std::io::SeekFrom::Start(start)).await?;
 
     let mut stream = response.bytes_stream();
+    let segment_length = end.saturating_sub(segment_start).saturating_add(1);
+    let mut downloaded_bytes = initial_downloaded.min(segment_length);
+    let mut last_flushed = downloaded_bytes;
     loop {
-        let next = tokio::time::timeout(STREAM_WATCHDOG_TIMEOUT, stream.next())
-            .await
-            .map_err(|_| {
-                KhukriError::Io(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "segment stream stalled",
-                ))
-            })?;
+        let next = tokio::select! {
+            _ = cancel.cancelled() => {
+                flush_segment_progress(pool, segment_id, downloaded_bytes, &mut last_flushed).await?;
+                return Err(KhukriError::Cancelled);
+            }
+            _ = fail_fast.cancelled() => {
+                flush_segment_progress(pool, segment_id, downloaded_bytes, &mut last_flushed).await?;
+                return Err(KhukriError::Aborted);
+            }
+            next = tokio::time::timeout(STREAM_WATCHDOG_TIMEOUT, stream.next()) => {
+                next.map_err(|_| {
+                    KhukriError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "segment stream stalled",
+                    ))
+                })?
+            }
+        };
 
         let Some(chunk) = next else {
             break;
@@ -891,12 +923,45 @@ async fn fetch_segment(
             b.lock().await.consume(bytes.len() as u64).await;
         }
         file.write_all(&bytes).await?;
+        downloaded_bytes = downloaded_bytes
+            .saturating_add(bytes.len() as u64)
+            .min(segment_length);
+        maybe_flush_segment_progress(pool, segment_id, downloaded_bytes, &mut last_flushed).await?;
         if let Some(p) = &progress {
             p.add_bytes(bytes.len() as u64);
         }
     }
 
     file.flush().await?;
+    flush_segment_progress(pool, segment_id, downloaded_bytes, &mut last_flushed).await?;
+    Ok(())
+}
+
+async fn maybe_flush_segment_progress(
+    pool: &SqlitePool,
+    segment_id: i64,
+    downloaded_bytes: u64,
+    last_flushed: &mut u64,
+) -> Result<()> {
+    if downloaded_bytes.saturating_sub(*last_flushed) >= SEGMENT_PROGRESS_FLUSH_BYTES {
+        flush_segment_progress(pool, segment_id, downloaded_bytes, last_flushed).await?;
+    }
+
+    Ok(())
+}
+
+async fn flush_segment_progress(
+    pool: &SqlitePool,
+    segment_id: i64,
+    downloaded_bytes: u64,
+    last_flushed: &mut u64,
+) -> Result<()> {
+    if downloaded_bytes == *last_flushed {
+        return Ok(());
+    }
+
+    db::set_segment_downloaded_bytes(pool, segment_id, downloaded_bytes).await?;
+    *last_flushed = downloaded_bytes;
     Ok(())
 }
 
@@ -977,6 +1042,7 @@ mod tests {
             start_byte: start,
             end_byte: end,
             completed: 0,
+            downloaded_bytes: 0,
         }
     }
 
@@ -1003,6 +1069,32 @@ mod tests {
     fn reuse_empty_is_not_resumable() {
         assert!(!can_reuse_segments(&[], &[(0, 999)]));
     }
+
+    #[test]
+    fn partial_segment_bytes_are_counted_for_resume() {
+        let mut segment = make_seg(100, 199);
+        segment.downloaded_bytes = 40;
+
+        assert_eq!(segment_len(&segment), 100);
+        assert_eq!(segment_downloaded_bytes(&segment), 40);
+    }
+
+    #[test]
+    fn completed_segment_counts_full_length() {
+        let mut segment = make_seg(100, 199);
+        segment.completed = 1;
+        segment.downloaded_bytes = 40;
+
+        assert_eq!(segment_downloaded_bytes(&segment), 100);
+    }
+
+    #[test]
+    fn partial_segment_bytes_are_capped_to_segment_length() {
+        let mut segment = make_seg(100, 199);
+        segment.downloaded_bytes = 400;
+
+        assert_eq!(segment_downloaded_bytes(&segment), 100);
+    }
 }
 
 fn can_reuse_segments(existing: &[db::SegmentRow], expected: &[(u64, u64)]) -> bool {
@@ -1020,4 +1112,13 @@ fn segment_len(row: &db::SegmentRow) -> u64 {
     let start = row.start_byte.max(0) as u64;
     let end = row.end_byte.max(row.start_byte) as u64;
     end.saturating_sub(start).saturating_add(1)
+}
+
+fn segment_downloaded_bytes(row: &db::SegmentRow) -> u64 {
+    let len = segment_len(row);
+    if row.completed != 0 {
+        return len;
+    }
+
+    (row.downloaded_bytes.max(0) as u64).min(len)
 }
