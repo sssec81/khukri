@@ -9,6 +9,9 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "http2", "rustls-tls"] }
 
+# URL parsing for validation
+url = "2"
+
 # Database - Optimized for SQLite and Security
 # Disabling default-features removes the vulnerable 'rsa' crate used by MySQL
 sqlx = { version = "0.8", default-features = false, features = [

@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use reqwest::header::{HeaderName, HeaderValue};
+use url::Url;
 
 use crate::error::{KhukriError, Result};
 
@@ -154,6 +155,40 @@ impl DownloadConfig {
                 field: "url",
                 reason: "URL must not be empty".to_string(),
             });
+        }
+
+        // Validate URL scheme and block private/localhost addresses.
+        let parsed_url = url::Url::parse(&self.url).map_err(|e| KhukriError::InvalidConfig {
+            field: "url",
+            reason: format!("invalid URL: {e}"),
+        })?;
+
+        let scheme = parsed_url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(KhukriError::InvalidConfig {
+                field: "url",
+                reason: format!("URL scheme '{}' not allowed (http/https only)", scheme),
+            });
+        }
+
+        if let Some(host) = parsed_url.host_str() {
+            let lower = host.to_lowercase();
+            // Block localhost, private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), and loopback addresses.
+            if lower == "localhost"
+                || lower == "127.0.0.1"
+                || lower == "::1"
+                || lower == "[::1]"
+                || lower.starts_with("10.")
+                || lower.starts_with("172.16.")
+                || lower.starts_with("192.168.")
+                || lower.starts_with("169.254.")
+            // link-local
+            {
+                return Err(KhukriError::InvalidConfig {
+                    field: "url",
+                    reason: format!("private or localhost addresses not allowed in downloads"),
+                });
+            }
         }
 
         if self.file_path.as_os_str().is_empty() {

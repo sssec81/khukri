@@ -748,12 +748,24 @@ async fn start_managed_download(
     }
 
     let mut config = DownloadConfig::new(request.url.clone(), output_path);
+    // Enforce output path sandbox: restrict downloads to the configured downloads directory.
+    config.allowed_root = Some(PathBuf::from(
+        &settings_snapshot.general.default_download_path,
+    ));
     config.priority = priority.clone();
     config.override_threads = request.override_threads;
     config.throttle = ThrottleConfig {
         bytes_per_sec: request.bytes_per_sec,
     };
     config.proxy_url = configured_proxy_url(&settings_snapshot);
+
+    // Convert custom_headers HashMap to Vec<(String, String)> and set on config.
+    let headers: Vec<(String, String)> = request
+        .custom_headers
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    config.custom_headers = headers;
 
     let handle = spawn_download(config, pool.clone());
     let id = handle.id().to_string();

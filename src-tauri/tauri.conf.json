@@ -7,7 +7,7 @@
     "frontendDist": "../src"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "Khukri",
@@ -18,6 +18,9 @@
         "resizable": true
       }
     ]
+  },
+  "security": {
+    "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'"
   },
   "bundle": {
     "active": false,

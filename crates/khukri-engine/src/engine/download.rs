@@ -880,6 +880,25 @@ async fn fetch_segment(
         });
     }
 
+    // Validate Content-Range header to detect server/proxy misbehavior.
+    // Expected format: "bytes start-end/total"
+    if let Some(content_range) = response.headers().get("content-range") {
+        let range_str = content_range
+            .to_str()
+            .unwrap_or("")
+            .trim_start_matches("bytes ");
+        let parts: Vec<&str> = range_str.split('-').collect();
+        if parts.len() < 2 {
+            return Err(KhukriError::InvalidConfig {
+                field: "content-range",
+                reason: format!(
+                    "malformed Content-Range header: {}",
+                    content_range.to_string_lossy()
+                ),
+            });
+        }
+    }
+
     let mut file = OpenOptions::new().write(true).open(file_path).await?;
     file.seek(std::io::SeekFrom::Start(start)).await?;
 
@@ -919,6 +938,18 @@ async fn fetch_segment(
         }
 
         let bytes = chunk?;
+
+        // Prevent writing beyond the segment boundary.
+        if downloaded_bytes.saturating_add(bytes.len() as u64) > segment_length {
+            return Err(KhukriError::InvalidConfig {
+                field: "segment_bytes",
+                reason: format!(
+                    "segment [{}-{}] received more than {} bytes",
+                    segment_start, end, segment_length
+                ),
+            });
+        }
+
         if let Some(ref b) = bucket {
             b.lock().await.consume(bytes.len() as u64).await;
         }
@@ -930,6 +961,17 @@ async fn fetch_segment(
         if let Some(p) = &progress {
             p.add_bytes(bytes.len() as u64);
         }
+    }
+
+    // Verify we received the expected number of bytes.
+    if downloaded_bytes < segment_length {
+        return Err(KhukriError::InvalidConfig {
+            field: "segment_bytes",
+            reason: format!(
+                "segment [{}-{}] received {} bytes, expected {}",
+                segment_start, end, downloaded_bytes, segment_length
+            ),
+        });
     }
 
     file.flush().await?;
