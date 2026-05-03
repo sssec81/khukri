@@ -126,6 +126,35 @@ Host ID: `com.khukri.host`
 
 ---
 
+## Current Known State (as of Sprint 4)
+
+### Extension — recently fixed
+
+- `ask`-mode prompt flow is now working via `extension/prompt.html` + `extension/prompt.js`
+- `web_accessible_resources` includes the prompt assets in `extension/manifest.json`
+- `all_frames` is `false` on all content scripts to avoid duplicate injection
+- `isExtensionAlive()` guards stale runtime messaging in `extension/content-script.js`
+- `chrome.downloads.onCreated` cancels synchronously before async work in `extension/service-worker.js`
+- Prompt keepalive port prevents MV3 service worker suspension while the dialog is open
+- Retry queue fallback persists bridge-unavailable payloads in `chrome.storage.session`
+
+### Known open issue
+
+- `prompt.html` can open as a full tab instead of a popup window in Chrome/Brave
+- `chrome.windows.create({ type: 'popup' })` is unreliable from MV3 service worker context
+- Deferred for later investigation, likely involving an offscreen-document-based flow
+
+### Extension file map
+
+- `extension/service-worker.js` — download interception, stream detection state, prompt flow, native bridge handoff
+- `extension/content-script.js` — isolated world relay, extension liveness guard, page message bridge
+- `extension/content-script-main.js` — MAIN world fetch/XHR instrumentation for stream discovery
+- `extension/blade-ui.js` — YouTube pill UI and quality picker
+- `extension/prompt.html` — download interception dialog shell
+- `extension/prompt.js` — dialog logic, keepalive port, TTL guard, decision handoff
+
+---
+
 ## Non-Negotiables
 
 - **Zero telemetry.** No outbound requests except: user-initiated downloads, yt-dlp update check (24h, opt-out toggle), self-update check.
@@ -155,6 +184,12 @@ Sprint 3 current state:
 - The current WebView frontend is static `src/index.html` + `src/app.js` + `src/styles.css`
 - `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing `libgtk-3-dev`, `libwebkit2gtk-4.1-dev`, and `librsvg2-dev`
 - `cargo tauri dev` is the next runtime verification step
+
+Sprint 4 extension state:
+- The Manifest V3 extension includes a working `ask` prompt flow plus stable `auto` interception mode
+- Blade-triggered media downloads prefer captured `videoplayback` or playlist URLs, then fall back to the watch URL for `yt-dlp`
+- Prompt payloads and the retry queue now use `chrome.storage.session` for MV3-safe transient state
+- The main unresolved browser UX issue is Chrome/Brave opening the prompt page as a tab instead of a popup
 
 ---
 

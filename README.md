@@ -171,7 +171,8 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 - Sprint 3 is not fully release-polished yet
 - tray `Pause All` / `Resume All` now toggles from live queue state, but cross-platform tray QA is still pending
 - `Open Folder` can be unreliable in WSL or desktop-less Linux setups
-- extension handoff is stable in `auto` mode; `ask` dialog mode is currently experimental and temporarily deferred
+- extension handoff is stable in both `auto` mode and the current `ask` dialog flow
+- the prompt dialog can open as a full browser tab instead of a floating popup window in Chrome-based browsers; `chrome.windows.create({ type: 'popup' })` is unreliable from MV3 service workers, so this remains deferred pending a better windowing approach
 - during unpacked-extension dev reloads, stale tab scripts can raise `Extension context invalidated`; opening a fresh tab clears this
 - Windows native shell is now verified for build, test, and app launch; extension runtime polish still needs a final pass
 - branding, screenshots, and production packaging polish are not final
