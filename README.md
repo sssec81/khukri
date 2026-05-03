@@ -7,7 +7,7 @@
 
 ## Project Signals
 
-- License: GPLv3
+- License: MIT
 - Current status: Sprint 4 in progress
 - Last verified locally before current Sprint 4 media work: `cargo check -p khukri-engine`, `cargo check -p khukri-app`
 - Platform direction: Windows, Linux, macOS
