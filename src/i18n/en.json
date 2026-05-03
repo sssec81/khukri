@@ -41,6 +41,7 @@
   "downloads.actionResume": "Resume",
   "downloads.actionCancel": "Cancel",
   "downloads.failureLabel": "Failure",
+  "downloads.fileMissing": "File is no longer on disk. Remove this stale entry.",
   "status.ready": "Ready",
   "status.loading": "Loading queue...",
   "status.started": "Download queued.",

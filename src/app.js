@@ -41,6 +41,7 @@ const FALLBACK_STRINGS = {
   "downloads.actionResume": "Resume",
   "downloads.actionCancel": "Cancel",
   "downloads.failureLabel": "Failure",
+  "downloads.fileMissing": "File is no longer on disk. Remove this stale entry.",
   "status.ready": "Ready",
   "status.loading": "Loading queue...",
   "status.started": "Download queued.",
@@ -90,6 +91,7 @@ const pendingActions = new Set();
 let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
+let queueRefreshInFlight = false;
 
 function onboardingComplete(settings) {
   return Boolean(settings?.onboarding_complete);
@@ -232,7 +234,7 @@ function htmlEscape(value) {
 
 function safeStatus(value) {
   const status = String(value ?? "");
-  return ["queued", "active", "paused", "complete", "failed", "cancelled"].includes(status)
+  return ["queued", "active", "paused", "complete", "failed", "cancelled", "missing"].includes(status)
     ? status
     : "queued";
 }
@@ -240,12 +242,12 @@ function safeStatus(value) {
 function rowPrimaryAction(item) {
   const status = item.liveStatus ?? item.status;
   if (status === "complete") {
-    return "open";
+    return item.fileExists === false ? "remove" : "open";
   }
   if (status === "paused") {
     return "resume";
   }
-  if (status === "failed" || status === "cancelled") {
+  if (status === "failed" || status === "cancelled" || status === "missing") {
     return "remove";
   }
   return "pause";
@@ -254,12 +256,15 @@ function rowPrimaryAction(item) {
 function mergeQueueWithProgress(items) {
   return items.map((item) => {
     const progress = progressById.get(item.id);
+    const fileMissing = item.status === "complete" && item.fileExists === false;
     const hasLiveActiveProgress = progress && ["queued", "active"].includes(progress.status);
     const backendTerminal = ["failed", "complete", "cancelled"].includes(item.status)
       || (item.status === "paused" && !hasLiveActiveProgress);
-    const liveStatus = hasLiveActiveProgress ? progress.status : (backendTerminal ? item.status : (progress?.status ?? item.status));
+    const liveStatus = fileMissing
+      ? "missing"
+      : (hasLiveActiveProgress ? progress.status : (backendTerminal ? item.status : (progress?.status ?? item.status)));
     const totalBytes = progress?.totalBytes ?? item.totalBytes ?? null;
-    const bytesDone = liveStatus === "complete" && totalBytes != null
+    const bytesDone = (liveStatus === "complete" || liveStatus === "missing") && totalBytes != null
       ? Number(totalBytes)
       : progress?.bytesDone ?? 0;
     const percent = totalBytes && totalBytes > 0
@@ -273,7 +278,7 @@ function mergeQueueWithProgress(items) {
       totalBytes,
       speedBps: backendTerminal ? 0 : (progress?.speedBps ?? 0),
       etaSeconds: backendTerminal ? null : (progress?.etaSeconds ?? null),
-      percent: liveStatus === "complete" ? 100 : percent
+      percent: liveStatus === "complete" || liveStatus === "missing" ? 100 : percent
     };
   });
 }
@@ -342,16 +347,26 @@ function renderQueue(items) {
     const etaText = item.etaSeconds > 0 ? formatEta(item.etaSeconds) : null;
     const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : null;
     const failureText = item.failureReason || null;
-    const percent = liveStatus === "complete" ? 100 : item.percent;
+    const noticeText = liveStatus === "missing"
+      ? strings["downloads.fileMissing"]
+      : (liveStatus === "failed" && failureText
+        ? `${strings["downloads.failureLabel"]}: ${failureText}`
+        : null);
+    const percent = liveStatus === "complete" || liveStatus === "missing" ? 100 : item.percent;
+    const isIndeterminate = ["queued", "active"].includes(liveStatus)
+      && (item.bytesDone ?? 0) <= 0
+      && (!item.totalBytes || item.percent <= 0);
+    const progressFillClass = isIndeterminate
+      ? `progress-fill progress-fill--${liveStatus} progress-fill--indeterminate`
+      : `progress-fill progress-fill--${liveStatus}`;
+    const percentLabel = `${Math.max(0, percent).toFixed(0)}%`;
     const { ext, category } = fileExtInfo(item.filePath);
     const escapedId = htmlEscape(item.id);
-    const escapedFilePath = htmlEscape(item.filePath);
     const escapedBaseName = htmlEscape(baseName(item.filePath));
     const escapedUrl = htmlEscape(item.url);
-    const escapedFailureText = htmlEscape(failureText);
     const escapedActionLabel = htmlEscape(actionLabel);
     const escapedCancelLabel = htmlEscape(strings["downloads.actionCancel"]);
-    const escapedFailureLabel = htmlEscape(strings["downloads.failureLabel"]);
+    const escapedNoticeText = htmlEscape(noticeText);
     const pendingAttrs = isPending ? " disabled aria-disabled=\"true\"" : "";
 
     return `
@@ -373,9 +388,9 @@ function renderQueue(items) {
           </div>
           <div class="row-mid">
             <div class="progress-track" aria-hidden="true">
-              <div class="progress-fill progress-fill--${liveStatus}" style="width:${percent.toFixed(1)}%"></div>
+              <div class="${progressFillClass}" style="width:${isIndeterminate ? "35" : percent.toFixed(1)}%"></div>
             </div>
-            <span class="row-pct">${percent.toFixed(0)}%</span>
+            <span class="row-pct">${percentLabel}</span>
           </div>
           <div class="row-bot">
             <span class="row-url" title="${escapedUrl}">${escapedUrl}</span>
@@ -385,8 +400,8 @@ function renderQueue(items) {
               ${sizeText ? `<span class="row-stat">${htmlEscape(sizeText)}</span>` : ""}
             </div>
           </div>
-          ${item.liveStatus === "failed" && failureText
-        ? `<div class="row-error">${escapedFailureLabel}: ${escapedFailureText}</div>`
+          ${noticeText
+        ? `<div class="row-error">${escapedNoticeText}</div>`
         : ""}
         </div>
       </article>
@@ -499,6 +514,11 @@ function applySettings(settings) {
 }
 
 async function refreshQueue(strings, options = {}) {
+  if (queueRefreshInFlight) {
+    return;
+  }
+
+  queueRefreshInFlight = true;
   const statusNode = document.getElementById("formStatus");
   if (!options.preserveStatus) {
     statusNode.textContent = strings["status.loading"];
@@ -512,6 +532,8 @@ async function refreshQueue(strings, options = {}) {
     }
   } catch (error) {
     statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+  } finally {
+    queueRefreshInFlight = false;
   }
 }
 
@@ -564,6 +586,9 @@ async function handleRowAction(action, id) {
       progressById.delete(id);
     }
     renderQueue(currentQueue);
+    if (action === "open") {
+      await refreshQueue(strings, { preserveStatus: true });
+    }
     throw error;
   } finally {
     pendingActions.delete(id);
@@ -871,6 +896,25 @@ async function main() {
 
   await refreshQueue(strings);
   void invoke("pump_queue").catch(() => { });
+
+  // Keep queue view feeling instant even if event delivery is delayed.
+  window.setInterval(() => {
+    void refreshQueue(strings, { preserveStatus: true });
+  }, 1200);
 }
 
-void main();
+function showBootError(error) {
+  console.error("Khukri failed to start", error);
+  const splash = document.getElementById("bootSplash");
+  if (!splash) {
+    return;
+  }
+  splash.innerHTML = `
+    <div class="boot-error">
+      <strong>Khukri failed to start.</strong>
+      <span>${htmlEscape(errorText(error))}</span>
+    </div>
+  `;
+}
+
+void main().catch(showBootError);

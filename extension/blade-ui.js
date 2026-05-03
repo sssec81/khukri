@@ -1,5 +1,6 @@
 (function () {
     const PILL_ID = 'khukri-blade-pill';
+    const PROMPT_ID = 'khukri-download-prompt';
     const QUALITY_STORAGE_KEY = 'quality_preferences';
     const QUALITY_DEFAULT = 'best';
     const QUALITY_OPTIONS = [
@@ -266,6 +267,62 @@
         }
     }
 
+    function ensurePromptStyle() {
+        if (document.getElementById(`${PROMPT_ID}-style`)) return;
+        const style = document.createElement('style');
+        style.id = `${PROMPT_ID}-style`;
+        style.textContent = `
+        #${PROMPT_ID}{position:fixed;right:20px;bottom:20px;z-index:2147483647;width:min(420px,calc(100vw - 24px));border:1px solid rgba(255,159,28,.34);background:linear-gradient(145deg,rgba(45,90,39,.96),rgba(17,18,22,.96));border-radius:12px;box-shadow:0 16px 34px rgba(0,0,0,.42);color:#fff;font-family:-apple-system,'SF Pro Display','Segoe UI Variable Display',BlinkMacSystemFont,'Helvetica Neue',sans-serif;padding:12px}
+        #${PROMPT_ID} .khp-title{font-weight:700;font-size:13px;margin-bottom:4px}
+        #${PROMPT_ID} .khp-sub{font-size:11px;color:rgba(255,255,255,.72);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:10px}
+        #${PROMPT_ID} .khp-actions{display:flex;gap:8px}
+        #${PROMPT_ID} button{border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px;cursor:pointer;font-size:12px;font-weight:700;color:#fff;background:rgba(255,255,255,.06)}
+        #${PROMPT_ID} .khp-primary{background:rgba(74,140,68,.95);border-color:rgba(74,140,68,1)}
+        #${PROMPT_ID} .khp-foot{margin-top:9px;display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.78)}
+        `;
+        document.head.appendChild(style);
+    }
+
+    function removePrompt() {
+        document.getElementById(PROMPT_ID)?.remove();
+    }
+
+    function showDownloadPrompt(payload) {
+        ensurePromptStyle();
+        removePrompt();
+        const root = document.createElement('div');
+        root.id = PROMPT_ID;
+        root.innerHTML = `
+          <div class="khp-title">Download intercepted</div>
+          <div class="khp-sub" title="${payload.filename || payload.url || ''}">${payload.filename || payload.url || ''}</div>
+          <div class="khp-actions">
+            <button class="khp-primary" type="button" data-action="start">Start in Khukri</button>
+            <button type="button" data-action="keep">Keep in Browser</button>
+          </div>
+          <label class="khp-foot"><input type="checkbox" id="khukri-prompt-remember" />Remember this choice</label>
+        `;
+        document.documentElement.appendChild(root);
+
+        root.addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-action]');
+            if (!button) return;
+            const remember = Boolean(root.querySelector('#khukri-prompt-remember')?.checked);
+            safeSendMessage({
+                type: 'khukri_prompt_decision',
+                payload: {
+                    action: button.dataset.action,
+                    remember,
+                    id: payload.id,
+                    url: payload.url,
+                    filename: payload.filename,
+                    size: payload.size,
+                    referrer: payload.referrer
+                }
+            });
+            removePrompt();
+        });
+    }
+
     function qualityForOrigin(result, origin) {
         const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
             ? result[QUALITY_STORAGE_KEY]
@@ -480,4 +537,12 @@
     window.addEventListener('beforeunload', () => clearTimeout(showTimer));
 
     watchVideoPresence();
+
+    if (hasExtensionContext()) {
+        chrome.runtime.onMessage.addListener((message) => {
+            if (message?.type === 'khukri_prompt_download' && message.payload) {
+                showDownloadPrompt(message.payload);
+            }
+        });
+    }
 })();

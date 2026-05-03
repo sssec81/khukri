@@ -10,6 +10,9 @@ const RECENT_REQUESTS_TTL_MS = 4000;
 const latestStreamByTab = new Map();
 const QUALITY_STORAGE_KEY = 'quality_preferences';
 const QUALITY_DEFAULT = 'best';
+const INTERCEPT_MODE_KEY = 'intercept_mode';
+const INTERCEPT_MODE_ASK = 'ask';
+const INTERCEPT_MODE_AUTO = 'auto';
 
 function isTargetStream(url) {
     return STREAM_PATTERNS.some((pattern) => pattern.test(url || ''));
@@ -66,15 +69,17 @@ function sendToNative(payload) {
     const port = ensureNativePort();
     if (!port) {
         console.warn('Native bridge not available, queueing download for retry:', payload.url);
-        return;
+        return false;
     }
 
     try {
         port.postMessage(payload);
+        return true;
     } catch (e) {
         console.error('Failed to send message to native host:', e);
         nativePort = null;
         lastDisconnectTime = Date.now();
+        return false;
     }
 }
 
@@ -189,8 +194,63 @@ function canHandleDownload(url) {
     return true;
 }
 
-function isBridgeConnected() {
-    return nativePort !== null;
+function loadInterceptMode() {
+    return new Promise((resolve) => {
+        chrome.storage.local.get([INTERCEPT_MODE_KEY], (result) => {
+            if (chrome.runtime.lastError) {
+                resolve(INTERCEPT_MODE_ASK);
+                return;
+            }
+            const mode = result?.[INTERCEPT_MODE_KEY];
+            resolve(mode === INTERCEPT_MODE_AUTO ? INTERCEPT_MODE_AUTO : INTERCEPT_MODE_ASK);
+        });
+    });
+}
+
+function startDownloadInKhukri(downloadItem) {
+    const url = downloadItem.finalUrl || downloadItem.url;
+    if (!ensureNativePort()) {
+        return false;
+    }
+
+    const sent = sendToNative({
+        type: 'queue_download',
+        url,
+        filename: normalizeFilename(downloadItem.filename, url),
+        size: downloadItem.fileSize || null,
+        source: 'browser',
+        pageUrl: downloadItem.referrer || null,
+        customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
+    });
+
+    if (sent) {
+        chrome.downloads.cancel(downloadItem.id);
+    }
+    return sent;
+}
+
+function sendDownloadPrompt(downloadItem) {
+    const tabId = downloadItem.tabId;
+    if (typeof tabId !== 'number' || tabId < 0) {
+        return false;
+    }
+
+    chrome.tabs.sendMessage(tabId, {
+        type: 'khukri_prompt_download',
+        payload: {
+            id: downloadItem.id,
+            url: downloadItem.finalUrl || downloadItem.url,
+            filename: normalizeFilename(downloadItem.filename, downloadItem.finalUrl || downloadItem.url),
+            size: downloadItem.fileSize || null,
+            referrer: downloadItem.referrer || null
+        }
+    }, () => {
+        if (chrome.runtime.lastError) {
+            // If prompt UI is unavailable on the page, keep interception reliable.
+            startDownloadInKhukri(downloadItem);
+        }
+    });
+    return true;
 }
 
 chrome.downloads.onCreated.addListener((downloadItem) => {
@@ -201,48 +261,55 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
         return;
     }
 
-    // Only cancel the download if the bridge is connected
-    if (!isBridgeConnected()) {
-        // Bridge not connected, let browser's default download handler work
-        return;
-    }
-
-    chrome.downloads.cancel(downloadItem.id);
-
-    sendToNative({
-        type: 'queue_download',
-        url: url,
-        filename: normalizeFilename(downloadItem.filename, url),
-        size: downloadItem.fileSize || null,
-        source: 'browser',
-        pageUrl: downloadItem.referrer || null,
-        customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
+    void loadInterceptMode().then((mode) => {
+        if (mode === INTERCEPT_MODE_ASK) {
+            const promptSent = sendDownloadPrompt(downloadItem);
+            if (!promptSent) {
+                startDownloadInKhukri(downloadItem);
+            }
+            return;
+        }
+        startDownloadInKhukri(downloadItem);
     });
 });
 
-chrome.webRequest.onBeforeRequest.addListener(
-    (details) => {
-        if (!isTargetStream(details.url)) return;
+function onStreamRequest(details) {
+    if (!isTargetStream(details.url)) return;
 
-        if (isDuplicateRequest(dedupeKey(details))) return;
+    if (isDuplicateRequest(dedupeKey(details))) return;
 
-        const payload = {
-            type: 'queue_download',
-            url: details.url,
-            filename: normalizeFilename('', details.url),
-            size: null,
-            source: 'stream',
-            pageUrl: details.documentUrl || details.initiator || null,
-            customHeaders: buildCustomHeaders({
-                referer: details.initiator || null,
-                pageUrl: details.documentUrl || null
-            })
-        };
+    const payload = {
+        type: 'queue_download',
+        url: details.url,
+        filename: normalizeFilename('', details.url),
+        size: null,
+        source: 'stream',
+        pageUrl: details.documentUrl || details.initiator || null,
+        customHeaders: buildCustomHeaders({
+            referer: details.initiator || null,
+            pageUrl: details.documentUrl || null
+        })
+    };
 
-        rememberBestStream(details.tabId, payload);
-    },
-    { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media'] }
-);
+    rememberBestStream(details.tabId, payload);
+}
+
+async function syncWebRequestListener() {
+    const hasAllUrls = await chrome.permissions.contains({ origins: ['<all_urls>'] });
+    const isRegistered = chrome.webRequest.onBeforeRequest.hasListener(onStreamRequest);
+
+    if (hasAllUrls && !isRegistered) {
+        chrome.webRequest.onBeforeRequest.addListener(
+            onStreamRequest,
+            { urls: ['<all_urls>'], types: ['xmlhttprequest', 'media'] }
+        );
+        return;
+    }
+
+    if (!hasAllUrls && isRegistered) {
+        chrome.webRequest.onBeforeRequest.removeListener(onStreamRequest);
+    }
+}
 
 chrome.runtime.onMessage.addListener((message, sender) => {
     if (!message || !message.type) return;
@@ -302,109 +369,65 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             });
         })();
     }
+
+    if (message.type === 'khukri_prompt_decision') {
+        const payload = message.payload || {};
+        const action = payload.action;
+        const downloadId = payload.id;
+        const url = payload.url || '';
+        const filename = normalizeFilename(payload.filename || '', url);
+        const referrer = payload.referrer || null;
+
+        if (payload.remember === true && (action === 'start' || action === 'keep')) {
+            chrome.storage.local.set({
+                [INTERCEPT_MODE_KEY]: action === 'start' ? INTERCEPT_MODE_AUTO : INTERCEPT_MODE_ASK
+            }, () => void chrome.runtime.lastError);
+        }
+
+        if (action === 'start') {
+            if (typeof downloadId === 'number') {
+                chrome.downloads.cancel(downloadId, () => void chrome.runtime.lastError);
+            }
+
+            sendToNative({
+                type: 'queue_download',
+                url,
+                filename,
+                size: payload.size || null,
+                source: 'browser',
+                pageUrl: referrer,
+                customHeaders: buildCustomHeaders({ referer: referrer, pageUrl: referrer })
+            });
+        }
+    }
 });
 
 function resetDismissedSites() {
     chrome.storage.local.remove('dismissed_sites');
 }
 
-// Content scripts are registered dynamically so that <all_urls> can be an
-// optional (user-grantable) host permission rather than a mandatory one.
-// Chrome fires the webRequest listener only for origins where permission has
-// been granted, so no extra guarding is needed there.
-const CONTENT_SCRIPT_REGISTRATIONS = [
-    {
-        id: 'khukri-main-world',
-        matches: ['<all_urls>'],
-        js: ['content-script-main.js'],
-        runAt: 'document_start',
-        world: 'MAIN',
-    },
-    {
-        id: 'khukri-isolated',
-        matches: ['<all_urls>'],
-        js: ['content-script.js'],
-        runAt: 'document_idle',
-        allFrames: true,
-        world: 'ISOLATED',
-    },
-    {
-        id: 'khukri-blade',
-        matches: ['<all_urls>'],
-        js: ['blade-ui.js'],
-        runAt: 'document_idle',
-        allFrames: true,
-        world: 'ISOLATED',
-    },
-];
-
-async function registerContentScripts() {
-    try {
-        // Unregister stale entries before re-registering so updates apply cleanly.
-        const existing = await chrome.scripting.getRegisteredContentScripts();
-        const existingIds = existing.map((s) => s.id);
-        const toUnregister = CONTENT_SCRIPT_REGISTRATIONS
-            .map((s) => s.id)
-            .filter((id) => existingIds.includes(id));
-
-        if (toUnregister.length > 0) {
-            await chrome.scripting.unregisterContentScripts({ ids: toUnregister });
-        }
-
-        await chrome.scripting.registerContentScripts(CONTENT_SCRIPT_REGISTRATIONS);
-    } catch (e) {
-        console.error('Khukri: failed to register content scripts:', e);
-    }
-}
-
-async function unregisterContentScripts() {
-    try {
-        const ids = CONTENT_SCRIPT_REGISTRATIONS.map((s) => s.id);
-        await chrome.scripting.unregisterContentScripts({ ids });
-    } catch {}
-}
-
-// Re-register scripts whenever <all_urls> is granted (e.g. after first-run
-// permission prompt or after a user re-grants a previously revoked permission).
-chrome.permissions.onAdded.addListener(async (permissions) => {
-    if (permissions.origins && permissions.origins.includes('<all_urls>')) {
-        await registerContentScripts();
-    }
+chrome.permissions.onAdded.addListener(async () => {
+    await syncWebRequestListener();
 });
 
-// Remove scripts when the broad permission is revoked so we don't leave
-// stale registrations that would fail silently.
-chrome.permissions.onRemoved.addListener(async (permissions) => {
-    if (permissions.origins && permissions.origins.includes('<all_urls>')) {
-        await unregisterContentScripts();
-    }
-});
-
-// On action click: request <all_urls> if not yet granted (requires a user
-// gesture — this is the only valid place to call permissions.request in MV3).
-chrome.action.onClicked.addListener(async () => {
-    const already = await chrome.permissions.contains({ origins: ['<all_urls>'] });
-    if (!already) {
-        const granted = await chrome.permissions.request({ origins: ['<all_urls>'] });
-        if (granted) {
-            await registerContentScripts();
-        }
-        return;
-    }
-    // If permission already granted, ensure scripts are registered (idempotent).
-    await registerContentScripts();
+chrome.permissions.onRemoved.addListener(async () => {
+    await syncWebRequestListener();
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
     resetDismissedSites();
-    // If the user already granted <all_urls> (e.g. extension update path),
-    // register content scripts immediately.
-    const has = await chrome.permissions.contains({ origins: ['<all_urls>'] });
-    if (has) {
-        await registerContentScripts();
-    }
+    await syncWebRequestListener();
 });
 
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
     resetDismissedSites();
+    await syncWebRequestListener();
 });
+
+(async () => {
+    try {
+        await syncWebRequestListener();
+    } catch (error) {
+        console.error('Khukri: boot-time listener sync failed:', error);
+    }
+})();

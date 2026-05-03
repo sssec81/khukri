@@ -893,7 +893,7 @@ async fn fetch_segment(
                 field: "content-range",
                 reason: format!(
                     "malformed Content-Range header: {}",
-                    content_range.to_string_lossy()
+                    content_range.to_str().unwrap_or("<invalid utf8>")
                 ),
             });
         }

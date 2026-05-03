@@ -57,6 +57,7 @@ struct DownloadListItem {
     id: String,
     url: String,
     file_path: String,
+    file_exists: bool,
     total_bytes: Option<i64>,
     status: String,
     priority: String,
@@ -304,11 +305,18 @@ fn unix_now_secs() -> i64 {
         .as_secs() as i64
 }
 
+fn output_file_exists(file_path: &str) -> bool {
+    Path::new(file_path).is_file()
+}
+
 fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
+    let file_exists = output_file_exists(&row.file_path);
+
     DownloadListItem {
         id: row.id,
         url: row.url,
         file_path: row.file_path,
+        file_exists,
         total_bytes: row.total_bytes,
         status: row.status,
         priority: row.priority,
@@ -487,10 +495,7 @@ fn sync_tray_menu_state(app: &tauri::AppHandle, queue: &[DownloadListItem]) -> R
         return Ok(());
     };
 
-    let can_pause = queue
-        .iter()
-        .any(|item| item.status == "active" || item.status == "queued");
-    let can_resume = queue.iter().any(|item| item.status == "paused");
+    let (can_pause, can_resume) = tray_action_state(queue);
 
     tray_menu
         .pause_all
@@ -502,6 +507,14 @@ fn sync_tray_menu_state(app: &tauri::AppHandle, queue: &[DownloadListItem]) -> R
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+fn tray_action_state(queue: &[DownloadListItem]) -> (bool, bool) {
+    let can_pause = queue
+        .iter()
+        .any(|item| item.status == "active" || item.status == "queued");
+    let can_resume = queue.iter().any(|item| item.status == "paused");
+    (can_pause, can_resume)
 }
 
 #[cfg(not(desktop))]
@@ -841,6 +854,7 @@ async fn start_managed_download(
             id: id.clone(),
             url: request.url.clone(),
             file_path: output_path_string,
+            file_exists: false,
             total_bytes: None,
             status: "queued".to_string(),
             priority: priority.as_str().to_string(),
@@ -989,6 +1003,7 @@ async fn start_managed_media_download(
             id,
             url: request.url,
             file_path: output_path_string,
+            file_exists: false,
             total_bytes: None,
             status: "active".to_string(),
             priority: priority.as_str().to_string(),
@@ -1067,8 +1082,8 @@ fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let pause_all = MenuItem::with_id(app, "tray-pause-all", "Pause All", true, None::<&str>)?;
-    let resume_all = MenuItem::with_id(app, "tray-resume-all", "Resume All", true, None::<&str>)?;
+    let pause_all = MenuItem::with_id(app, "tray-pause-all", "Pause All", false, None::<&str>)?;
+    let resume_all = MenuItem::with_id(app, "tray-resume-all", "Resume All", false, None::<&str>)?;
     let open_dashboard = MenuItem::with_id(
         app,
         "tray-open-dashboard",
@@ -1284,6 +1299,13 @@ async fn pump_queue(app: tauri::AppHandle, state: State<'_, AppState>) -> Result
 #[tauri::command]
 async fn open_download_folder(file_path: String) -> Result<(), String> {
     let candidate = PathBuf::from(file_path);
+    if !candidate.exists() {
+        return Err(format!(
+            "downloaded file is missing: {}",
+            candidate.display()
+        ));
+    }
+
     let target = if candidate.is_dir() {
         candidate
     } else {
@@ -1397,6 +1419,23 @@ mod tests {
         settings
     }
 
+    fn tray_item(status: &str) -> DownloadListItem {
+        DownloadListItem {
+            id: format!("test-{status}"),
+            url: "https://example.com/file.bin".to_string(),
+            file_path: "/tmp/file.bin".to_string(),
+            file_exists: false,
+            total_bytes: None,
+            status: status.to_string(),
+            priority: "normal".to_string(),
+            throttle_bytes_per_sec: None,
+            media_quality: None,
+            request_source: None,
+            failure_reason: None,
+            created_at: 0,
+        }
+    }
+
     #[test]
     fn empty_output_uses_default_directory_and_url_filename() {
         let default_dir = std::env::temp_dir().join("khukri-default-output");
@@ -1423,6 +1462,47 @@ mod tests {
         );
 
         assert_eq!(path, default_dir.join("sample.bin"));
+    }
+
+    #[test]
+    fn output_file_exists_tracks_deleted_download_files() {
+        let path = std::env::temp_dir().join(format!("khukri-file-exists-{}", Uuid::new_v4()));
+        std::fs::write(&path, b"done").unwrap();
+
+        assert!(output_file_exists(&path.display().to_string()));
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(!output_file_exists(&path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn open_download_folder_reports_missing_file() {
+        let path = std::env::temp_dir().join(format!("khukri-missing-file-{}", Uuid::new_v4()));
+        let error = open_download_folder(path.display().to_string())
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("downloaded file is missing"));
+    }
+
+    #[test]
+    fn tray_action_state_tracks_pause_and_resume_availability() {
+        assert_eq!(tray_action_state(&[]), (false, false));
+        assert_eq!(tray_action_state(&[tray_item("active")]), (true, false));
+        assert_eq!(tray_action_state(&[tray_item("queued")]), (true, false));
+        assert_eq!(tray_action_state(&[tray_item("paused")]), (false, true));
+        assert_eq!(
+            tray_action_state(&[
+                tray_item("complete"),
+                tray_item("failed"),
+                tray_item("cancelled")
+            ]),
+            (false, false)
+        );
+        assert_eq!(
+            tray_action_state(&[tray_item("active"), tray_item("paused")]),
+            (true, true)
+        );
     }
 }
 

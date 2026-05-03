@@ -112,8 +112,8 @@ Sprint 4 work already landed in the tree:
 
 - finish stabilization and edge-case QA
 - verify native host registration and end-to-end browser handoff on Windows
-- polish tray-state behavior
-- replace placeholder branding assets
+- finish final manual QA for tray behavior across desktop OSes
+- collect launch-ready screenshots/showcase assets
 - measure Windows cold-start and RAM budget
 
 ### Sprint 4: Media Support
@@ -169,9 +169,11 @@ Khukri leans into this: deterministic segment ranges, pre-allocation before writ
 ## Current Limitations
 
 - Sprint 3 is not fully release-polished yet
-- tray `Pause All` / `Resume All` enable-disable state still needs refinement
+- tray `Pause All` / `Resume All` now toggles from live queue state, but cross-platform tray QA is still pending
 - `Open Folder` can be unreliable in WSL or desktop-less Linux setups
-- Windows native shell is now verified for build, test, and app launch; extension handoff and runtime polish still need a final pass
+- extension handoff is stable in `auto` mode; `ask` dialog mode is currently experimental and temporarily deferred
+- during unpacked-extension dev reloads, stale tab scripts can raise `Extension context invalidated`; opening a fresh tab clears this
+- Windows native shell is now verified for build, test, and app launch; extension runtime polish still needs a final pass
 - branding, screenshots, and production packaging polish are not final
 - Sprint 4 media features are implemented in-progress but not fully validated or release-ready yet
 
@@ -241,7 +243,7 @@ Current local verification:
 - `cargo check -p khukri-app` passes on Ubuntu 24.04 / WSL after installing the required GTK/WebKit packages
 - `cargo tauri info` reports a valid Rust/Tauri toolchain once those system packages are present
 - `cargo tauri dev` launches successfully on Ubuntu 24.04 / WSL
-- A placeholder tray/app icon currently lives at `src-tauri/icons/icon.png` so `tauri::generate_context!()` can build cleanly
+- Final app/tray icon assets live in `src-tauri/icons/`, including 16/32/64/128/256 PNGs plus multi-resolution ICO/ICNS
 
 Run the desktop shell:
 
@@ -350,8 +352,8 @@ cargo run -p khukri-engine --example download -- https://proof.ovh.net/files/10M
 - Integration risks and mitigations are documented in [docs/integration-hardening.md](docs/integration-hardening.md).
 - The current Sprint 3 UI is intentionally plain JavaScript + HTML + CSS. A richer frontend toolchain can be added later without changing the Rust command surface.
 - The current Tauri frontend keeps its locale file at `src/i18n/en.json` so it ships with the static frontend bundle cleanly.
-- Sprint 3 currently includes queue actions, persisted settings, scheduler gating, proxy-aware downloads, failed-download reason display, and resumable progress restoration.
-- Remaining Sprint 3 gaps are mostly stabilization work: tray menu enable/disable state, Windows runtime verification, branded icons, and a final QA pass on edge-case errors.
+- Sprint 3 currently includes queue actions, persisted settings, scheduler gating, proxy-aware downloads, failed-download reason display, resumable progress restoration, dynamic tray menu state, and final app/tray icon assets.
+- Remaining Sprint 3 gaps are mostly stabilization work: native browser handoff validation, Windows cold-start/RAM measurement, cross-platform tray QA, and a final pass on edge-case errors.
 
 ---
 

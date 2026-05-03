@@ -158,7 +158,7 @@ impl DownloadConfig {
         }
 
         // Validate URL scheme and block private/localhost addresses.
-        let parsed_url = url::Url::parse(&self.url).map_err(|e| KhukriError::InvalidConfig {
+        let parsed_url = Url::parse(&self.url).map_err(|e| KhukriError::InvalidConfig {
             field: "url",
             reason: format!("invalid URL: {e}"),
         })?;

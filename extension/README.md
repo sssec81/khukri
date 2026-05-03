@@ -15,6 +15,9 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 - Requires the Khukri Native Messaging host to be registered as `com.khukri.host`
 - For YouTube and similar SPAs, the pill overlay is re-injected after navigation changes
 - The current dev workflow clears `dismissed_sites` on extension install/startup so the pill is easy to re-test after reloads
+- Current stable interception mode is `auto` (download handoff without prompt)
+- `ask` (dialog prompt) mode is experimental right now and may not appear consistently in unpacked dev sessions
+- If you see `Extension context invalidated` after reloads, close stale tabs and test from a fresh tab/session
 
 ## UI/UX Highlights
 - Pill overlay uses Gurkha Green, Tiger Amber, glassmorphism, and an IDM-style player-adjacent layout
@@ -30,3 +33,7 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 - [x] Service worker observes stream patterns and content script provides blob/video fallback
 - [x] Pill overlay is robust, premium, and context-aware
 - [x] Blade UI matches the current Sprint 2 reviewed behavior for delay, dismissal, and player-adjacent placement
+
+## Current Intercept Modes
+- `auto`: stable; browser download is canceled and handed to Khukri when bridge is available
+- `ask`: in-progress; intended to show a `Start in Khukri` / `Keep in Browser` prompt before handoff
