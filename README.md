@@ -372,7 +372,7 @@ Good areas to jump in:
 
 ## License
 
-GPLv3. See [LICENSE](LICENSE).
+MIT LICENSE. See [LICENSE](LICENSE).
 
 Bundled yt-dlp (Sprint 4): Unlicense.  
 Bundled FFmpeg (Sprint 4): GPL-compatible build only (no non-free codecs).
