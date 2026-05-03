@@ -53,3 +53,6 @@ secrets/
 # Local download benchmark artifacts
 tmp/
 .tmpdebug-download.bin
+
+# FFmpeg sidecars — too large for git, fetch via sidecar/fetch-ffmpeg.sh
+sidecar/ffmpeg-*
