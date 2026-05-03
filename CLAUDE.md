@@ -162,7 +162,7 @@ Host ID: `com.khukri.host`
 - **No `master` HEAD tracking for yt-dlp.** Tagged releases only, SHA-256 verified before any swap.
 - **Atomic file ops.** Pre-allocate full file size before any segment writes. Hot-swap sidecars via write-to-temp → verify → rename.
 - **`clippy --deny warnings` must pass.** Zero warnings policy enforced in CI.
-- **License:** GPLv3. Bundled yt-dlp is Unlicense. FFmpeg must be GPL-compatible (no libfdk-aac, no OpenH264 non-free).
+- **License:** MIT. Bundled yt-dlp is Unlicense. FFmpeg must be GPL-compatible (no libfdk-aac, no OpenH264 non-free).
 
 ---
 
