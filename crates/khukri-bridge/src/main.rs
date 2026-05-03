@@ -225,6 +225,13 @@ fn status_label(status: DownloadStatus) -> &'static str {
     }
 }
 
+fn unix_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 fn progress_event(
     progress: &DownloadProgress,
     source: Option<String>,
@@ -620,8 +627,30 @@ async fn main() -> Result<()> {
                         headers,
                     };
                     let source_clone = source.clone();
+                    let quality_clone = quality.clone();
                     let path_display = output_path.display().to_string();
                     let tx = writer_tx.clone();
+                    let pool_for_media = pool.clone();
+
+                    db::upsert_download(
+                        &pool,
+                        &id,
+                        &job.url,
+                        &path_display,
+                        None,
+                        "normal",
+                        None,
+                        unix_now_secs(),
+                    )
+                    .await?;
+                    db::set_download_request_metadata(
+                        &pool,
+                        &id,
+                        quality.as_deref(),
+                        source.as_deref(),
+                    )
+                    .await?;
+                    db::set_download_status(&pool, &id, "active").await?;
 
                     let _ = writer_tx.send(BridgeEvent {
                         kind: "progress",
@@ -650,6 +679,20 @@ async fn main() -> Result<()> {
                         .await
                         {
                             Ok(outcome) => {
+                                let _ = db::set_download_file_path(
+                                    &pool_for_media,
+                                    &job.id,
+                                    &outcome.final_path.display().to_string(),
+                                )
+                                .await;
+                                let _ = db::set_download_request_metadata(
+                                    &pool_for_media,
+                                    &job.id,
+                                    quality_clone.as_deref(),
+                                    source_clone.as_deref(),
+                                )
+                                .await;
+                                let _ = db::set_download_status(&pool_for_media, &job.id, "complete").await;
                                 let _ = tx.send(BridgeEvent {
                                     kind: "progress",
                                     id: job.id.clone(),
@@ -666,6 +709,14 @@ async fn main() -> Result<()> {
                                 });
                             }
                             Err(err) => {
+                                let _ = db::set_download_request_metadata(
+                                    &pool_for_media,
+                                    &job.id,
+                                    quality_clone.as_deref(),
+                                    source_clone.as_deref(),
+                                )
+                                .await;
+                                let _ = db::set_download_failed(&pool_for_media, &job.id, &err.to_string()).await;
                                 let _ = tx.send(BridgeEvent {
                                     kind: "error",
                                     id: job.id.clone(),

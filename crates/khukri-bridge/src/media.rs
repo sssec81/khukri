@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::{fs, io::Read};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -173,6 +174,7 @@ pub fn resolve_ytdlp_binary() -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
+        .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
         .ok_or_else(|| {
             anyhow::anyhow!("could not find bundled yt-dlp sidecar for {}", sidecar_name)
         })
@@ -211,9 +213,26 @@ pub fn resolve_ffmpeg_binary() -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
+        .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
         .ok_or_else(|| {
             anyhow::anyhow!("could not find bundled ffmpeg sidecar for {}", sidecar_name)
         })
+}
+
+fn build_ytdlp_command(path: &Path) -> Result<Command> {
+    #[cfg(target_os = "macos")]
+    {
+        if file_starts_with_shebang(path)? {
+            let python = resolve_python3_path()?;
+            tracing::info!(binary = %path.display(), interpreter = %python.display(), "bridge launching yt-dlp script via python3");
+            let mut command = Command::new(python);
+            command.arg(path);
+            return Ok(command);
+        }
+    }
+
+    tracing::info!(binary = %path.display(), "bridge launching yt-dlp executable directly");
+    Ok(Command::new(path))
 }
 
 pub async fn run_ytdlp<F>(job: YtDlpJob, mut on_progress: F) -> Result<YtDlpOutcome>
@@ -221,7 +240,9 @@ where
     F: FnMut(YtDlpProgress) + Send,
 {
     let binary = resolve_ytdlp_binary()?;
-    let mut child = Command::new(&binary)
+    tracing::info!(binary = %binary.display(), url = %job.url, quality = ?job.quality, "bridge starting yt-dlp job");
+    let mut command = build_ytdlp_command(&binary)?;
+    let mut child = command
         .args(build_arguments(&job))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -258,14 +279,15 @@ where
     stderr_task.await.context("stderr reader task failed")??;
 
     if !status.success() {
-        bail!(
-            "{}",
-            format_media_failure(&status.to_string(), last_detail.as_deref())
-        );
+        let reason = format_media_failure(&status.to_string(), last_detail.as_deref());
+        tracing::warn!(binary = %binary.display(), %reason, "bridge yt-dlp job failed");
+        bail!("{}", reason);
     }
 
+    let final_path = final_path.unwrap_or_else(|| job.output_path.clone());
+    tracing::info!(binary = %binary.display(), final_path = %final_path.display(), "bridge yt-dlp job completed");
     Ok(YtDlpOutcome {
-        final_path: final_path.unwrap_or_else(|| job.output_path.clone()),
+        final_path,
     })
 }
 
@@ -323,6 +345,40 @@ fn parse_detail_line(line: &str) -> Option<String> {
     }
 
     Some(trimmed.to_string())
+}
+
+fn file_starts_with_shebang(path: &Path) -> Result<bool> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut buf = [0u8; 2];
+    let read = file
+        .read(&mut buf)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(read == 2 && buf == [b'#', b'!'])
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_python3_path() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("KHUKRI_PYTHON3_BIN") {
+        let path = PathBuf::from(explicit);
+        if path.exists() {
+            return Ok(path);
+        }
+        bail!("KHUKRI_PYTHON3_BIN does not exist: {}", path.display());
+    }
+
+    for candidate in [
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    bail!("python3 not found for macOS yt-dlp script execution; set KHUKRI_PYTHON3_BIN")
 }
 
 fn format_media_failure(status: &str, detail: Option<&str>) -> String {

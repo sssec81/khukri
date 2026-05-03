@@ -52,9 +52,11 @@ function ensureNativePort() {
     }
 
     try {
+        console.info('Khukri SW: connecting to native host', HOST_NAME);
         nativePort = chrome.runtime.connectNative(HOST_NAME);
         let badgeSet = false;
         nativePort.onMessage.addListener((message) => {
+            console.info('Khukri SW: received native host message', message?.type || 'unknown', message?.status || '');
             if (!message || !message.id) return;
             if (message.output_path && !badgeSet) {
                 badgeSet = true;
@@ -62,6 +64,8 @@ function ensureNativePort() {
             }
         });
         nativePort.onDisconnect.addListener(() => {
+            const lastError = chrome.runtime.lastError?.message || '';
+            console.warn('Khukri SW: native host disconnected', lastError);
             nativePort = null;
             lastDisconnectTime = Date.now();
         });
@@ -83,6 +87,12 @@ function sendToNative(payload) {
     }
 
     try {
+        console.info('Khukri SW: posting payload to native host', {
+            source: payload.source,
+            url: payload.url,
+            pageUrl: payload.pageUrl,
+            quality: payload.quality || null
+        });
         port.postMessage(payload);
         return true;
     } catch (e) {
@@ -194,6 +204,19 @@ function originFromUrl(url) {
         return url ? new URL(url).origin : '';
     } catch {
         return '';
+    }
+}
+
+function isYoutubePageUrl(url) {
+    try {
+        const host = new URL(url).hostname.toLowerCase();
+        return host === 'youtube.com'
+            || host === 'www.youtube.com'
+            || host === 'm.youtube.com'
+            || host === 'music.youtube.com'
+            || host === 'youtu.be';
+    } catch {
+        return false;
     }
 }
 
@@ -374,44 +397,27 @@ async function restartInBrowser(payload) {
     });
 }
 
-// FIX 2 — Removed the chrome.downloads.cancel() call that was here in the
-//          original. Cancellation is now done synchronously in onCreated (FIX 1)
-//          before this function is ever called, so doing it again here would
-//          trigger a harmless-but-noisy error on an already-cancelled download.
-//
-// FIX 2 — Fixed the chrome.windows.create success check: we now test `!win`
-//          in addition to `chrome.runtime.lastError`, because some Chrome
-//          versions pass a null `win` without setting lastError.
-async function openDownloadPrompt(downloadItem) {
-    const url = downloadItem.finalUrl || downloadItem.url;
+async function openPromptForPayload(payload) {
     const token = crypto.randomUUID();
     const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
-    const payload = {
-        id: downloadItem.id,
-        url,
-        filename: normalizeFilename(downloadItem.filename, url),
-        size: downloadItem.fileSize || null,
-        referrer: downloadItem.referrer || null,
+    const promptPayload = {
+        ...payload,
+        id: payload.id || token,
+        filename: normalizeFilename(payload.filename || '', payload.url),
         createdAt: Date.now()
     };
 
-    await storageSessionSet({ [storageKey]: payload });
+    await storageSessionSet({ [storageKey]: promptPayload });
 
     const promptUrl = chrome.runtime.getURL(`prompt.html?token=${encodeURIComponent(token)}`);
-
-    // Get the current screen dimensions to center the popup.
-    // Falls back to safe defaults if the screen API is unavailable in the SW.
     const screenW = self.screen?.width ?? 1280;
     const screenH = self.screen?.height ?? 800;
     const popupW = 480;
     const popupH = 300;
     const left = Math.max(0, Math.round((screenW - popupW) / 2));
-    const top  = Math.max(0, Math.round((screenH - popupH) / 3)); // slightly above center
+    const top  = Math.max(0, Math.round((screenH - popupH) / 3));
 
     return new Promise((resolve) => {
-        // type: 'popup' is the correct API for a chrome popup window.
-        // It must be combined with explicit left/top/width/height — without
-        // positional params some Chromium builds ignore the type and open a tab.
         chrome.windows.create(
             {
                 url: promptUrl,
@@ -430,33 +436,13 @@ async function openDownloadPrompt(downloadItem) {
                         chrome.runtime.lastError?.message ?? 'win was null'
                     );
                     await storageSessionRemove(storageKey);
-                    const sent = sendToNative({
-                        type: 'queue_download',
-                        url,
-                        filename: payload.filename,
-                        size: payload.size,
-                        source: 'browser',
-                        pageUrl: payload.referrer,
-                        customHeaders: buildCustomHeaders({
-                            referer: payload.referrer,
-                            pageUrl: payload.referrer
-                        })
-                    });
+                    const sent = sendToNative(promptPayload);
                     if (!sent) {
-                        const restarted = await restartInBrowser(payload);
+                        const restarted = promptPayload.source === 'browser'
+                            ? await restartInBrowser(promptPayload)
+                            : false;
                         if (!restarted) {
-                            await pushRetryQueue({
-                                type: 'queue_download',
-                                url,
-                                filename: payload.filename,
-                                size: payload.size,
-                                source: 'browser',
-                                pageUrl: payload.referrer,
-                                customHeaders: buildCustomHeaders({
-                                    referer: payload.referrer,
-                                    pageUrl: payload.referrer
-                                })
-                            });
+                            await pushRetryQueue(promptPayload);
                         }
                     }
                     resolve(false);
@@ -465,6 +451,32 @@ async function openDownloadPrompt(downloadItem) {
                 resolve(true);
             }
         );
+    });
+}
+
+// FIX 2 — Removed the chrome.downloads.cancel() call that was here in the
+//          original. Cancellation is now done synchronously in onCreated (FIX 1)
+//          before this function is ever called, so doing it again here would
+//          trigger a harmless-but-noisy error on an already-cancelled download.
+//
+// FIX 2 — Fixed the chrome.windows.create success check: we now test `!win`
+//          in addition to `chrome.runtime.lastError`, because some Chrome
+//          versions pass a null `win` without setting lastError.
+async function openDownloadPrompt(downloadItem) {
+    const url = downloadItem.finalUrl || downloadItem.url;
+    return openPromptForPayload({
+        id: downloadItem.id,
+        type: 'queue_download',
+        url,
+        filename: normalizeFilename(downloadItem.filename, url),
+        size: downloadItem.fileSize || null,
+        referrer: downloadItem.referrer || null,
+        source: 'browser',
+        pageUrl: downloadItem.referrer || null,
+        customHeaders: buildCustomHeaders({
+            referer: downloadItem.referrer || null,
+            pageUrl: downloadItem.referrer || null
+        })
     });
 }
 
@@ -490,15 +502,32 @@ async function handlePromptDecision(payload, action, remember) {
             url: payload.url,
             filename: normalizeFilename(payload.filename || '', payload.url),
             size: payload.size || null,
-            source: 'browser',
-            pageUrl: payload.referrer || null,
-            customHeaders: buildCustomHeaders({
-                referer: payload.referrer || null,
-                pageUrl: payload.referrer || null
+            source: payload.source || 'browser',
+            pageUrl: payload.pageUrl || payload.referrer || null,
+            quality: payload.quality || null,
+            customHeaders: payload.customHeaders || buildCustomHeaders({
+                referer: payload.pageUrl || payload.referrer || null,
+                pageUrl: payload.pageUrl || payload.referrer || null
             })
         });
         if (!sent) {
-            await restartInBrowser(payload);
+            if (payload.source === 'browser') {
+                await restartInBrowser(payload);
+            } else {
+                await pushRetryQueue({
+                    type: 'queue_download',
+                    url: payload.url,
+                    filename: normalizeFilename(payload.filename || '', payload.url),
+                    size: payload.size || null,
+                    source: payload.source || 'browser',
+                    pageUrl: payload.pageUrl || payload.referrer || null,
+                    quality: payload.quality || null,
+                    customHeaders: payload.customHeaders || buildCustomHeaders({
+                        referer: payload.pageUrl || payload.referrer || null,
+                        pageUrl: payload.pageUrl || payload.referrer || null
+                    })
+                });
+            }
         }
     }
 }
@@ -607,6 +636,12 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         const senderTabId = sender.tab?.id;
         const senderTabUrl = sender.tab?.url;
         const initial = latestStreamByTab.get(senderTabId) || null;
+        console.info('Khukri SW: blade queue_download received', {
+            senderTabId,
+            senderTabUrl,
+            requestedQuality: message.quality || null,
+            initialStreamUrl: initial?.url || null
+        });
 
         (async () => {
             const origin = originFromUrl(senderTabUrl);
@@ -614,8 +649,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 ? initial
                 : await waitForUsableStreamCandidate(senderTabId);
             const requestedQuality = message.quality || await loadQualityPreference(origin);
+            const preferredPageUrl =
+                message.pageUrl || senderTabUrl || remembered?.pageUrl || null;
+            const preferExtractorPageUrl = isYoutubePageUrl(preferredPageUrl);
 
-            const resolvedUrl = hasUsableStreamCandidate(remembered)
+            const resolvedUrl = preferExtractorPageUrl
+                ? (preferredPageUrl || '')
+                : hasUsableStreamCandidate(remembered)
                 ? remembered.url
                 : (message.url && !message.url.startsWith('blob:') ? message.url : '') ||
                 senderTabUrl ||
@@ -623,9 +663,16 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 '';
 
             const resolvedPageUrl =
-                remembered?.pageUrl || message.pageUrl || senderTabUrl || null;
+                preferredPageUrl;
 
-            sendToNative({
+            console.info('Khukri SW: blade payload resolved', {
+                preferExtractorPageUrl,
+                resolvedUrl,
+                resolvedPageUrl,
+                rememberedUrl: remembered?.url || null,
+                requestedQuality
+            });
+            const payload = {
                 type: 'queue_download',
                 url: resolvedUrl,
                 filename: normalizeFilename(message.filename, resolvedUrl || senderTabUrl || 'video'),
@@ -637,7 +684,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                     referer: resolvedPageUrl,
                     pageUrl: resolvedPageUrl
                 })
-            });
+            };
+
+            const mode = await loadInterceptMode();
+            if (mode === INTERCEPT_MODE_ASK) {
+                await openPromptForPayload(payload);
+                return;
+            }
+
+            sendToNative(payload);
         })();
     }
 

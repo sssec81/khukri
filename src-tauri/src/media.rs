@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::{Mutex as StdMutex, OnceLock};
+use std::{fs, io::Read};
 
 use khukri_engine::{DownloadProgress, DownloadStatus};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -12,6 +15,8 @@ use crate::bootstrap::app_data_dir;
 
 const PROGRESS_PREFIX: &str = "__KHUKRI_PROGRESS__:";
 const FINAL_PATH_PREFIX: &str = "__KHUKRI_FINAL_PATH__:";
+#[cfg(target_os = "macos")]
+static PREPARED_SIDECARS: OnceLock<StdMutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaQuality {
@@ -139,6 +144,7 @@ pub fn ytdlp_path() -> Result<PathBuf, String> {
     if let Some(explicit) = std::env::var_os("KHUKRI_YTDLP_BIN") {
         let path = PathBuf::from(explicit);
         if path.exists() {
+            prepare_sidecar_for_execution(&path)?;
             return Ok(path);
         }
         return Err(format!(
@@ -153,7 +159,14 @@ pub fn ytdlp_path() -> Result<PathBuf, String> {
 pub fn ffmpeg_path() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("KHUKRI_FFMPEG_BIN") {
         let path = PathBuf::from(explicit);
-        return path.exists().then_some(path);
+        if path.exists() {
+            if let Err(error) = prepare_sidecar_for_execution(&path) {
+                tracing::warn!(binary = %path.display(), %error, "failed to prepare ffmpeg sidecar");
+                return None;
+            }
+            return Some(path);
+        }
+        return None;
     }
 
     resolve_sidecar_path(platform_ffmpeg_name(), "KHUKRI_FFMPEG_BIN").ok()
@@ -195,7 +208,152 @@ fn resolve_sidecar_path(name: &str, env_name: &str) -> Result<PathBuf, String> {
     candidates
         .into_iter()
         .find(|path| path.exists())
+        .map(|path| path.canonicalize().unwrap_or(path))
         .ok_or_else(|| format!("could not find sidecar {name}; override with {env_name}"))
+}
+
+pub fn build_ytdlp_command(path: &Path) -> Result<Command, String> {
+    #[cfg(target_os = "macos")]
+    {
+        if file_starts_with_shebang(path)? {
+            let python = resolve_python3_path()?;
+            tracing::info!(binary = %path.display(), interpreter = %python.display(), "launching yt-dlp script via python3");
+            let mut command = Command::new(python);
+            command.arg(path);
+            return Ok(command);
+        }
+    }
+
+    tracing::info!(binary = %path.display(), "launching yt-dlp executable directly");
+    let command = Command::new(path);
+    Ok(command)
+}
+
+pub fn prepare_sidecar_for_execution(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let prepared = PREPARED_SIDECARS.get_or_init(|| StdMutex::new(std::collections::HashSet::new()));
+
+        {
+            let guard = prepared.lock().map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
+            if guard.contains(&canonical) {
+                return Ok(());
+            }
+        }
+
+        best_effort_strip_quarantine(&canonical)?;
+        if is_macho_binary(&canonical)? {
+            ad_hoc_codesign(&canonical)?;
+        }
+
+        let mut guard = prepared.lock().map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
+        guard.insert(canonical);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+    }
+
+    Ok(())
+}
+
+fn file_starts_with_shebang(path: &Path) -> Result<bool, String> {
+    let mut file = fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut buf = [0u8; 2];
+    let read = file
+        .read(&mut buf)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    Ok(read == 2 && buf == [b'#', b'!'])
+}
+
+fn is_macho_binary(path: &Path) -> Result<bool, String> {
+    let mut file = fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut buf = [0u8; 4];
+    let read = file
+        .read(&mut buf)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    if read < 4 {
+        return Ok(false);
+    }
+
+    Ok(matches!(
+        buf,
+        [0xfe, 0xed, 0xfa, 0xce]
+            | [0xce, 0xfa, 0xed, 0xfe]
+            | [0xfe, 0xed, 0xfa, 0xcf]
+            | [0xcf, 0xfa, 0xed, 0xfe]
+            | [0xca, 0xfe, 0xba, 0xbe]
+            | [0xbe, 0xba, 0xfe, 0xca]
+            | [0xca, 0xfe, 0xba, 0xbf]
+            | [0xbf, 0xba, 0xfe, 0xca]
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn best_effort_strip_quarantine(path: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/xattr")
+        .args(["-dr", "com.apple.quarantine"])
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to run xattr for {}: {e}", path.display()))?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "xattr returned non-zero status {} for {}",
+        status,
+        path.display()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn ad_hoc_codesign(path: &Path) -> Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--deep", "--sign", "-"])
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to run codesign for {}: {e}", path.display()))?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "codesign returned non-zero status {} for {}",
+        status,
+        path.display()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_python3_path() -> Result<PathBuf, String> {
+    if let Some(explicit) = std::env::var_os("KHUKRI_PYTHON3_BIN") {
+        let path = PathBuf::from(explicit);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "KHUKRI_PYTHON3_BIN does not exist: {}",
+            path.display()
+        ));
+    }
+
+    for candidate in [
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    Err("python3 not found for macOS yt-dlp script execution; set KHUKRI_PYTHON3_BIN".to_string())
 }
 
 async fn run_media_download(
@@ -207,7 +365,15 @@ async fn run_media_download(
 ) -> Result<PathBuf, String> {
     let binary = ytdlp_path()?;
     let ffmpeg_binary = ffmpeg_path();
-    let mut child = Command::new(&binary)
+    tracing::info!(
+        binary = %binary.display(),
+        ffmpeg = ffmpeg_binary.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "none".to_string()),
+        url = %job.url,
+        quality = ?job.quality,
+        "starting yt-dlp media download"
+    );
+    let mut command = build_ytdlp_command(&binary)?;
+    let mut child = command
         .args(build_arguments(&job, ffmpeg_binary.as_deref()))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -301,11 +467,13 @@ async fn run_media_download(
             progress.eta_seconds = None;
         });
         let reason = format_media_failure(&status.to_string(), last_detail.as_deref());
+        tracing::warn!(binary = %binary.display(), %reason, "yt-dlp media download failed");
         state.lock().await.failure_reason = Some(reason.clone());
         return Err(reason);
     }
 
     let final_path = final_path.unwrap_or_else(|| job.output_path.clone());
+    tracing::info!(binary = %binary.display(), final_path = %final_path.display(), "yt-dlp media download completed");
     state.lock().await.final_path = Some(final_path.clone());
     set_progress(&tx, |progress| {
         progress.status = DownloadStatus::Complete;

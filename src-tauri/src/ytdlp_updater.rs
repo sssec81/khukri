@@ -5,10 +5,10 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, USER_AGENT};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
-use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::bootstrap::app_data_dir;
+use crate::media::{build_ytdlp_command, prepare_sidecar_for_execution};
 use crate::AppSettings;
 
 const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
@@ -242,6 +242,7 @@ pub async fn maybe_update_ytdlp(
 
     std::fs::write(&temp_path, &binary_bytes).map_err(|e| e.to_string())?;
     make_executable_if_needed(&temp_path)?;
+    prepare_sidecar_for_execution(&temp_path)?;
 
     let canary_version = run_canary(&temp_path).await;
     let canary_version = match canary_version {
@@ -268,6 +269,7 @@ pub async fn maybe_update_ytdlp(
     }
     rename_or_copy(&temp_path, &active_path)?;
     make_executable_if_needed(&active_path)?;
+    prepare_sidecar_for_execution(&active_path)?;
 
     {
         let mut current = settings.lock().await;
@@ -420,7 +422,7 @@ fn save_settings(settings: &AppSettings) -> Result<(), String> {
 }
 
 async fn run_canary(path: &Path) -> Result<String, String> {
-    let output = Command::new(path)
+    let output = build_ytdlp_command(path)?
         .arg("--version")
         .output()
         .await
@@ -494,7 +496,7 @@ fn platform_release_asset_name() -> Result<&'static str, String> {
         any(target_arch = "x86_64", target_arch = "aarch64")
     ))]
     {
-        return Ok("yt-dlp_macos");
+        return Ok("yt-dlp");
     }
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
