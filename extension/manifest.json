@@ -22,7 +22,8 @@
                 "content-script-main.js"
             ],
             "run_at": "document_start",
-            "world": "MAIN"
+            "world": "MAIN",
+            "all_frames": false
         },
         {
             "matches": [
@@ -33,7 +34,7 @@
                 "blade-ui.js"
             ],
             "run_at": "document_idle",
-            "all_frames": true
+            "all_frames": false
         }
     ],
     "background": {
@@ -41,5 +42,16 @@
     },
     "action": {
         "default_title": "Khukri Download Manager"
-    }
+    },
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "prompt.html",
+                "prompt.js"
+            ],
+            "matches": [
+                "<all_urls>"
+            ]
+        }
+    ]
 }

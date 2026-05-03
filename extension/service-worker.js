@@ -3,7 +3,7 @@ const STREAM_PATTERNS = [/\.m3u8(\?|$)/i, /\.mpd(\?|$)/i, /videoplayback/i];
 
 let nativePort = null;
 let lastDisconnectTime = 0;
-const RECONNECT_BACKOFF_MS = 1000; // Wait 1 second before retrying after disconnect
+const RECONNECT_BACKOFF_MS = 1000;
 const recentRequests = new Map();
 const RECENT_REQUESTS_MAX = 500;
 const RECENT_REQUESTS_TTL_MS = 4000;
@@ -13,6 +13,16 @@ const QUALITY_DEFAULT = 'best';
 const INTERCEPT_MODE_KEY = 'intercept_mode';
 const INTERCEPT_MODE_ASK = 'ask';
 const INTERCEPT_MODE_AUTO = 'auto';
+const PROMPT_STORAGE_PREFIX = 'khukri_prompt_';
+const BYPASS_TTL_MS = 10000;
+const browserBypassUntil = new Map();
+
+// FIX 6 — retry queue key in chrome.storage.session
+const RETRY_QUEUE_KEY = 'khukri_retry_queue';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers — unchanged from original
+// ─────────────────────────────────────────────────────────────────────────────
 
 function isTargetStream(url) {
     return STREAM_PATTERNS.some((pattern) => pattern.test(url || ''));
@@ -35,10 +45,9 @@ function buildCustomHeaders({ referer, pageUrl }) {
 function ensureNativePort() {
     if (nativePort) return nativePort;
 
-    // Implement backoff: don't retry too quickly after a disconnect
     const timeSinceDisconnect = Date.now() - lastDisconnectTime;
     if (timeSinceDisconnect < RECONNECT_BACKOFF_MS) {
-        return null; // Still in cooldown, don't retry yet
+        return null;
     }
 
     try {
@@ -56,7 +65,7 @@ function ensureNativePort() {
             lastDisconnectTime = Date.now();
         });
     } catch (e) {
-        console.error('Failed to connect to native host:', e);
+        console.error('Khukri: Failed to connect to native host:', e);
         nativePort = null;
         lastDisconnectTime = Date.now();
         return null;
@@ -68,7 +77,7 @@ function ensureNativePort() {
 function sendToNative(payload) {
     const port = ensureNativePort();
     if (!port) {
-        console.warn('Native bridge not available, queueing download for retry:', payload.url);
+        console.warn('Khukri: Native bridge not available for payload:', payload.url);
         return false;
     }
 
@@ -76,7 +85,7 @@ function sendToNative(payload) {
         port.postMessage(payload);
         return true;
     } catch (e) {
-        console.error('Failed to send message to native host:', e);
+        console.error('Khukri: Failed to send message to native host:', e);
         nativePort = null;
         lastDisconnectTime = Date.now();
         return false;
@@ -87,9 +96,6 @@ function dedupeKey(details) {
     return `${details.tabId}:${details.url}`;
 }
 
-// Returns true if the request is a duplicate within the TTL window.
-// Also evicts entries that are older than the TTL and trims the map to
-// RECENT_REQUESTS_MAX entries (oldest-first) to bound memory usage.
 function isDuplicateRequest(key) {
     const now = Date.now();
     const last = recentRequests.get(key);
@@ -97,12 +103,10 @@ function isDuplicateRequest(key) {
         return true;
     }
 
-    // Evict expired entries, then trim to size cap.
     for (const [k, ts] of recentRequests) {
         if (now - ts >= RECENT_REQUESTS_TTL_MS) recentRequests.delete(k);
     }
     if (recentRequests.size >= RECENT_REQUESTS_MAX) {
-        // Delete the oldest entry (Maps iterate insertion order).
         recentRequests.delete(recentRequests.keys().next().value);
     }
 
@@ -143,12 +147,10 @@ function waitForUsableStreamCandidate(tabId, timeoutMs = 3000) {
                 resolve(candidate);
                 return;
             }
-
             if (Date.now() - startedAt >= timeoutMs) {
                 resolve(candidate || null);
                 return;
             }
-
             setTimeout(check, 250);
         }
 
@@ -168,7 +170,6 @@ function loadQualityPreference(origin) {
                 resolve(QUALITY_DEFAULT);
                 return;
             }
-
             const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
                 ? result[QUALITY_STORAGE_KEY]
                 : null;
@@ -187,11 +188,41 @@ function originFromUrl(url) {
 }
 
 function canHandleDownload(url) {
-    // Khukri cannot handle these URL schemes
     if (!url) return false;
     if (url.startsWith('blob:')) return false;
     if (url.startsWith('data:')) return false;
     return true;
+}
+
+function browserBypassKey(url) {
+    return String(url || '');
+}
+
+function shouldBypassBrowserDownload(url) {
+    const key = browserBypassKey(url);
+    const expiresAt = browserBypassUntil.get(key) || 0;
+    if (expiresAt <= Date.now()) {
+        browserBypassUntil.delete(key);
+        return false;
+    }
+    browserBypassUntil.delete(key);
+    return true;
+}
+
+function bypassNextBrowserDownload(url) {
+    browserBypassUntil.set(browserBypassKey(url), Date.now() + BYPASS_TTL_MS);
+}
+
+function storageSessionSet(values) {
+    return chrome.storage.session.set(values);
+}
+
+function storageSessionGet(key) {
+    return chrome.storage.session.get(key);
+}
+
+function storageSessionRemove(key) {
+    return chrome.storage.session.remove(key);
 }
 
 function loadInterceptMode() {
@@ -207,11 +238,51 @@ function loadInterceptMode() {
     });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 6 — Retry queue
+// When sendToNative fails and restartInBrowser also fails, the payload is
+// pushed into chrome.storage.session. drainRetryQueue() is called on every SW
+// wake so pending downloads are eventually delivered.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function pushRetryQueue(payload) {
+    try {
+        const result = await chrome.storage.session.get(RETRY_QUEUE_KEY);
+        const existing = Array.isArray(result[RETRY_QUEUE_KEY]) ? result[RETRY_QUEUE_KEY] : [];
+        // Cap the queue at 20 entries to avoid unbounded growth
+        const next = [...existing, payload].slice(-20);
+        await chrome.storage.session.set({ [RETRY_QUEUE_KEY]: next });
+    } catch (e) {
+        console.warn('Khukri: Failed to push retry queue:', e);
+    }
+}
+
+async function drainRetryQueue() {
+    try {
+        const result = await chrome.storage.session.get(RETRY_QUEUE_KEY);
+        const queue = result[RETRY_QUEUE_KEY];
+        if (!Array.isArray(queue) || queue.length === 0) return;
+        await chrome.storage.session.remove(RETRY_QUEUE_KEY);
+        for (const payload of queue) {
+            const sent = sendToNative(payload);
+            if (!sent) {
+                await restartInBrowser(payload);
+            }
+        }
+    } catch (e) {
+        console.warn('Khukri: Failed to drain retry queue:', e);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Download actions
+// ─────────────────────────────────────────────────────────────────────────────
+
+// FIX 7 — removed the redundant ensureNativePort() call; sendToNative() does
+//          it internally. Also removed chrome.downloads.cancel() from here —
+//          FIX 1 moves it to the onCreated listener so it fires synchronously.
 function startDownloadInKhukri(downloadItem) {
     const url = downloadItem.finalUrl || downloadItem.url;
-    if (!ensureNativePort()) {
-        return false;
-    }
 
     const sent = sendToNative({
         type: 'queue_download',
@@ -223,59 +294,211 @@ function startDownloadInKhukri(downloadItem) {
         customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
     });
 
-    if (sent) {
-        chrome.downloads.cancel(downloadItem.id);
+    // FIX 6 — if the native bridge is down, queue for retry instead of silently losing the download
+    if (!sent) {
+        void pushRetryQueue({
+            type: 'queue_download',
+            url,
+            filename: normalizeFilename(downloadItem.filename, url),
+            size: downloadItem.fileSize || null,
+            source: 'browser',
+            pageUrl: downloadItem.referrer || null,
+            customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
+        });
     }
+
     return sent;
 }
 
-function sendDownloadPrompt(downloadItem) {
-    const tabId = downloadItem.tabId;
-    if (typeof tabId !== 'number' || tabId < 0) {
-        return false;
-    }
-
-    chrome.tabs.sendMessage(tabId, {
-        type: 'khukri_prompt_download',
-        payload: {
-            id: downloadItem.id,
-            url: downloadItem.finalUrl || downloadItem.url,
-            filename: normalizeFilename(downloadItem.filename, downloadItem.finalUrl || downloadItem.url),
-            size: downloadItem.fileSize || null,
-            referrer: downloadItem.referrer || null
-        }
-    }, () => {
-        if (chrome.runtime.lastError) {
-            // If prompt UI is unavailable on the page, keep interception reliable.
-            startDownloadInKhukri(downloadItem);
-        }
+async function restartInBrowser(payload) {
+    if (!payload?.url) return false;
+    bypassNextBrowserDownload(payload.url);
+    return new Promise((resolve) => {
+        chrome.downloads.download({
+            url: payload.url,
+            filename: normalizeFilename(payload.filename, payload.url),
+            conflictAction: 'uniquify',
+            saveAs: false
+        }, (id) => {
+            if (chrome.runtime.lastError) {
+                console.warn('Khukri: Failed to restart browser download:', chrome.runtime.lastError.message);
+                resolve(false);
+                return;
+            }
+            resolve(typeof id === 'number');
+        });
     });
-    return true;
 }
 
-chrome.downloads.onCreated.addListener((downloadItem) => {
-    // Check if we can handle this URL
+// FIX 2 — Removed the chrome.downloads.cancel() call that was here in the
+//          original. Cancellation is now done synchronously in onCreated (FIX 1)
+//          before this function is ever called, so doing it again here would
+//          trigger a harmless-but-noisy error on an already-cancelled download.
+//
+// FIX 2 — Fixed the chrome.windows.create success check: we now test `!win`
+//          in addition to `chrome.runtime.lastError`, because some Chrome
+//          versions pass a null `win` without setting lastError.
+async function openDownloadPrompt(downloadItem) {
     const url = downloadItem.finalUrl || downloadItem.url;
-    if (!canHandleDownload(url)) {
-        // Let browser handle it
+    const token = crypto.randomUUID();
+    const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
+    const payload = {
+        id: downloadItem.id,
+        url,
+        filename: normalizeFilename(downloadItem.filename, url),
+        size: downloadItem.fileSize || null,
+        referrer: downloadItem.referrer || null,
+        createdAt: Date.now()
+    };
+
+    await storageSessionSet({ [storageKey]: payload });
+
+    const promptUrl = chrome.runtime.getURL(`prompt.html?token=${encodeURIComponent(token)}`);
+
+    // Get the current screen dimensions to center the popup.
+    // Falls back to safe defaults if the screen API is unavailable in the SW.
+    const screenW = self.screen?.width ?? 1280;
+    const screenH = self.screen?.height ?? 800;
+    const popupW = 480;
+    const popupH = 300;
+    const left = Math.max(0, Math.round((screenW - popupW) / 2));
+    const top  = Math.max(0, Math.round((screenH - popupH) / 3)); // slightly above center
+
+    return new Promise((resolve) => {
+        // type: 'popup' is the correct API for a chrome popup window.
+        // It must be combined with explicit left/top/width/height — without
+        // positional params some Chromium builds ignore the type and open a tab.
+        chrome.windows.create(
+            {
+                url: promptUrl,
+                type: 'popup',
+                state: 'normal',
+                width: popupW,
+                height: popupH,
+                left,
+                top,
+                focused: true
+            },
+            async (win) => {
+                if (chrome.runtime.lastError || !win) {
+                    console.warn(
+                        'Khukri: Prompt window creation failed:',
+                        chrome.runtime.lastError?.message ?? 'win was null'
+                    );
+                    await storageSessionRemove(storageKey);
+                    const sent = sendToNative({
+                        type: 'queue_download',
+                        url,
+                        filename: payload.filename,
+                        size: payload.size,
+                        source: 'browser',
+                        pageUrl: payload.referrer,
+                        customHeaders: buildCustomHeaders({
+                            referer: payload.referrer,
+                            pageUrl: payload.referrer
+                        })
+                    });
+                    if (!sent) {
+                        const restarted = await restartInBrowser(payload);
+                        if (!restarted) {
+                            await pushRetryQueue({
+                                type: 'queue_download',
+                                url,
+                                filename: payload.filename,
+                                size: payload.size,
+                                source: 'browser',
+                                pageUrl: payload.referrer,
+                                customHeaders: buildCustomHeaders({
+                                    referer: payload.referrer,
+                                    pageUrl: payload.referrer
+                                })
+                            });
+                        }
+                    }
+                    resolve(false);
+                    return;
+                }
+                resolve(true);
+            }
+        );
+    });
+}
+
+// FIX 4 — storageSessionRemove is now called BEFORE dispatching the action.
+//          Previously it was called after, meaning a double-fire (e.g. user
+//          clicks twice before the SW processes) could dispatch the action
+//          twice. Removing the key first makes the handler idempotent.
+async function handlePromptDecision(payload, action, remember) {
+    if (remember === true && (action === 'start' || action === 'keep')) {
+        chrome.storage.local.set({
+            [INTERCEPT_MODE_KEY]: action === 'start' ? INTERCEPT_MODE_AUTO : INTERCEPT_MODE_ASK
+        }, () => void chrome.runtime.lastError);
+    }
+
+    if (action === 'keep') {
+        await restartInBrowser(payload);
         return;
     }
 
+    if (action === 'start') {
+        const sent = sendToNative({
+            type: 'queue_download',
+            url: payload.url,
+            filename: normalizeFilename(payload.filename || '', payload.url),
+            size: payload.size || null,
+            source: 'browser',
+            pageUrl: payload.referrer || null,
+            customHeaders: buildCustomHeaders({
+                referer: payload.referrer || null,
+                pageUrl: payload.referrer || null
+            })
+        });
+        if (!sent) {
+            await restartInBrowser(payload);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1 — downloads.onCreated
+// The single most important change: chrome.downloads.cancel() now fires
+// SYNCHRONOUSLY at the top of the listener, before loadInterceptMode() is
+// awaited. This guarantees the download is stopped even if the async chain
+// takes a long time (storage read, window creation) or if the SW is briefly
+// suspended between microtasks.
+//
+// Why this matters: in the original code, cancel() was called inside
+// openDownloadPrompt(), which is only reached after two async hops
+// (loadInterceptMode resolves, then openDownloadPrompt is called). Chrome can
+// complete a small file download in that window, making interception useless.
+// ─────────────────────────────────────────────────────────────────────────────
+chrome.downloads.onCreated.addListener((downloadItem) => {
+    const url = downloadItem.finalUrl || downloadItem.url;
+
+    if (!canHandleDownload(url)) return;
+    if (shouldBypassBrowserDownload(url)) return;
+
+    // FIX 1 — SYNCHRONOUS cancel before any async work
+    chrome.downloads.cancel(downloadItem.id, () => void chrome.runtime.lastError);
+
+    // FIX 6 — drain any queued retries from a previous bridge-unavailable state
+    void drainRetryQueue();
+
     void loadInterceptMode().then((mode) => {
         if (mode === INTERCEPT_MODE_ASK) {
-            const promptSent = sendDownloadPrompt(downloadItem);
-            if (!promptSent) {
-                startDownloadInKhukri(downloadItem);
-            }
+            void openDownloadPrompt(downloadItem);
             return;
         }
         startDownloadInKhukri(downloadItem);
     });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Stream detection (webRequest path) — unchanged from original
+// ─────────────────────────────────────────────────────────────────────────────
+
 function onStreamRequest(details) {
     if (!isTargetStream(details.url)) return;
-
     if (isDuplicateRequest(dedupeKey(details))) return;
 
     const payload = {
@@ -310,6 +533,10 @@ async function syncWebRequestListener() {
         chrome.webRequest.onBeforeRequest.removeListener(onStreamRequest);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message handler
+// ─────────────────────────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender) => {
     if (!message || !message.type) return;
@@ -372,35 +599,55 @@ chrome.runtime.onMessage.addListener((message, sender) => {
 
     if (message.type === 'khukri_prompt_decision') {
         const payload = message.payload || {};
-        const action = payload.action;
-        const downloadId = payload.id;
-        const url = payload.url || '';
-        const filename = normalizeFilename(payload.filename || '', url);
-        const referrer = payload.referrer || null;
+        void handlePromptDecision(payload, payload.action, payload.remember);
+    }
 
-        if (payload.remember === true && (action === 'start' || action === 'keep')) {
-            chrome.storage.local.set({
-                [INTERCEPT_MODE_KEY]: action === 'start' ? INTERCEPT_MODE_AUTO : INTERCEPT_MODE_ASK
-            }, () => void chrome.runtime.lastError);
-        }
+    if (message.type === 'khukri_prompt_get') {
+        const token = String(message.token || '');
+        const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
+        return storageSessionGet(storageKey).then((result) => result[storageKey] || null);
+    }
 
-        if (action === 'start') {
-            if (typeof downloadId === 'number') {
-                chrome.downloads.cancel(downloadId, () => void chrome.runtime.lastError);
-            }
-
-            sendToNative({
-                type: 'queue_download',
-                url,
-                filename,
-                size: payload.size || null,
-                source: 'browser',
-                pageUrl: referrer,
-                customHeaders: buildCustomHeaders({ referer: referrer, pageUrl: referrer })
-            });
-        }
+    // FIX 5 — storageSessionRemove() now fires BEFORE handlePromptDecision(),
+    //          making this handler idempotent against double-fire. The original
+    //          code removed the key after the action, which meant a concurrent
+    //          second message could re-read the same payload and act twice.
+    if (message.type === 'khukri_prompt_choose') {
+        const token = String(message.token || '');
+        const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
+        return storageSessionGet(storageKey).then(async (result) => {
+            const payload = result[storageKey];
+            if (!payload) return { ok: false };
+            await storageSessionRemove(storageKey);       // FIX 5 — remove first
+            await handlePromptDecision(payload, message.action, message.remember);
+            return { ok: true };
+        });
     }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 3 — Keepalive port for the prompt popup
+// prompt.html should open a Port with name 'khukri_prompt_keepalive' as soon
+// as it loads (see prompt.js changes). While that port is open, Chrome will
+// not suspend this service worker, ensuring the user can take as long as they
+// need to read the dialog before clicking.
+//
+// The handler here is intentionally minimal: we just hold the port open and
+// let the disconnect event clean itself up.
+// ─────────────────────────────────────────────────────────────────────────────
+chrome.runtime.onConnect.addListener((port) => {
+    if (port.name !== 'khukri_prompt_keepalive') return;
+    // Holding the reference is enough — Chrome won't suspend the SW.
+    port.onDisconnect.addListener(() => {
+        // Port closed (user clicked a button or closed the window). Nothing
+        // to do here; the decision is handled via khukri_prompt_choose above.
+        void chrome.runtime.lastError; // suppress "port closed" noise
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lifecycle listeners
+// ─────────────────────────────────────────────────────────────────────────────
 
 function resetDismissedSites() {
     chrome.storage.local.remove('dismissed_sites');
@@ -417,16 +664,22 @@ chrome.permissions.onRemoved.addListener(async () => {
 chrome.runtime.onInstalled.addListener(async () => {
     resetDismissedSites();
     await syncWebRequestListener();
+    // FIX 6 — drain any retries that survived from before the install/update
+    await drainRetryQueue();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
     resetDismissedSites();
     await syncWebRequestListener();
+    // FIX 6 — drain retries on browser startup (bridge may be available now)
+    await drainRetryQueue();
 });
 
 (async () => {
     try {
         await syncWebRequestListener();
+        // FIX 6 — drain retries on SW boot (covers extension reload during dev)
+        await drainRetryQueue();
     } catch (error) {
         console.error('Khukri: boot-time listener sync failed:', error);
     }

@@ -10,16 +10,34 @@
     const MSG_TYPE = 'khukri_v1_stream';
     const detected = new Set();
 
+    // Guard against "Extension context invalidated" errors that occur when the
+    // extension is reloaded while this content script is still alive in an old
+    // tab. Once the context is dead, chrome.runtime.id becomes undefined and
+    // any chrome.runtime call throws. We check once and then stop trying.
+    function isExtensionAlive() {
+        try {
+            return Boolean(chrome.runtime?.id);
+        } catch {
+            return false;
+        }
+    }
+
     function sendDetected(url, filename, pageUrl, context) {
         if (!url || detected.has(url)) return;
+        if (!isExtensionAlive()) return; // stale context — silently drop
         detected.add(url);
-        chrome.runtime.sendMessage({
-            type: 'stream_detected',
-            url,
-            filename,
-            pageUrl,
-            context,
-        });
+        try {
+            chrome.runtime.sendMessage({
+                type: 'stream_detected',
+                url,
+                filename,
+                pageUrl,
+                context,
+            });
+        } catch (e) {
+            // Context died between the check and the call — ignore silently.
+            // Nothing we can do from a stale content script.
+        }
     }
 
     // Relay messages posted by content-script-main.js running in the MAIN world.
