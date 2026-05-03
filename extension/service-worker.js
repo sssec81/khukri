@@ -8,6 +8,7 @@ const recentRequests = new Map();
 const RECENT_REQUESTS_MAX = 500;
 const RECENT_REQUESTS_TTL_MS = 4000;
 const latestStreamByTab = new Map();
+const DISMISSED_SITES_KEY = 'dismissed_sites';
 const QUALITY_STORAGE_KEY = 'quality_preferences';
 const QUALITY_DEFAULT = 'best';
 const INTERCEPT_MODE_KEY = 'intercept_mode';
@@ -130,6 +131,15 @@ function rememberBestStream(tabId, payload) {
     const currentScore = current ? scoreStreamCandidate(current.url) : 0;
     if (!current || nextScore >= currentScore) {
         latestStreamByTab.set(tabId, payload);
+    }
+}
+
+function cleanupTabState(tabId) {
+    if (typeof tabId !== 'number' || tabId < 0) return;
+    latestStreamByTab.delete(tabId);
+    const prefix = `${tabId}:`;
+    for (const key of recentRequests.keys()) {
+        if (key.startsWith(prefix)) recentRequests.delete(key);
     }
 }
 
@@ -271,6 +281,40 @@ async function drainRetryQueue() {
         }
     } catch (e) {
         console.warn('Khukri: Failed to drain retry queue:', e);
+    }
+}
+
+async function pruneDismissedSites() {
+    try {
+        const result = await chrome.storage.local.get([DISMISSED_SITES_KEY]);
+        const raw = result?.[DISMISSED_SITES_KEY];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            if (Array.isArray(raw)) {
+                await chrome.storage.local.remove(DISMISSED_SITES_KEY);
+            }
+            return;
+        }
+
+        const now = Date.now();
+        const next = {};
+        let changed = false;
+
+        for (const [origin, expiresAt] of Object.entries(raw)) {
+            if (typeof expiresAt === 'number' && expiresAt > now) {
+                next[origin] = expiresAt;
+            } else {
+                changed = true;
+            }
+        }
+
+        if (!changed) return;
+        if (Object.keys(next).length === 0) {
+            await chrome.storage.local.remove(DISMISSED_SITES_KEY);
+            return;
+        }
+        await chrome.storage.local.set({ [DISMISSED_SITES_KEY]: next });
+    } catch (error) {
+        console.warn('Khukri: Failed to prune dismissed_sites:', error);
     }
 }
 
@@ -649,10 +693,6 @@ chrome.runtime.onConnect.addListener((port) => {
 // Lifecycle listeners
 // ─────────────────────────────────────────────────────────────────────────────
 
-function resetDismissedSites() {
-    chrome.storage.local.remove('dismissed_sites');
-}
-
 chrome.permissions.onAdded.addListener(async () => {
     await syncWebRequestListener();
 });
@@ -661,15 +701,19 @@ chrome.permissions.onRemoved.addListener(async () => {
     await syncWebRequestListener();
 });
 
+chrome.tabs.onRemoved.addListener((tabId) => {
+    cleanupTabState(tabId);
+});
+
 chrome.runtime.onInstalled.addListener(async () => {
-    resetDismissedSites();
+    await pruneDismissedSites();
     await syncWebRequestListener();
     // FIX 6 — drain any retries that survived from before the install/update
     await drainRetryQueue();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-    resetDismissedSites();
+    await pruneDismissedSites();
     await syncWebRequestListener();
     // FIX 6 — drain retries on browser startup (bridge may be available now)
     await drainRetryQueue();
@@ -677,6 +721,7 @@ chrome.runtime.onStartup.addListener(async () => {
 
 (async () => {
     try {
+        await pruneDismissedSites();
         await syncWebRequestListener();
         // FIX 6 — drain retries on SW boot (covers extension reload during dev)
         await drainRetryQueue();

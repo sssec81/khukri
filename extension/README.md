@@ -14,15 +14,14 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 - Load this folder as an unpacked extension in Chrome
 - Requires the Khukri Native Messaging host to be registered as `com.khukri.host`
 - For YouTube and similar SPAs, the pill overlay is re-injected after navigation changes
-- The current dev workflow clears `dismissed_sites` on extension install/startup so the pill is easy to re-test after reloads
-- Current stable interception mode is `auto` (download handoff without prompt)
-- `ask` (dialog prompt) mode is experimental right now and may not appear consistently in unpacked dev sessions
+- Blade dismissals now persist in `chrome.storage.local` with a 7-day TTL per origin
+- Current stable interception modes are `auto` and the current `ask` prompt flow
 - If you see `Extension context invalidated` after reloads, close stale tabs and test from a fresh tab/session
 
 ## UI/UX Highlights
 - Pill overlay uses Gurkha Green, Tiger Amber, glassmorphism, and an IDM-style player-adjacent layout
 - Appears after a 1.5 second delay without shifting page layout
-- Dismisses per-origin using `chrome.storage.local` during a session, with dev-time reset on install/startup
+- Dismisses per-origin using `chrome.storage.local` with a 7-day TTL
 - Blade exposes a hover quality picker with per-origin persistence in `chrome.storage.local`
 - Blade clicks queue a native download through the service worker with the selected media quality
 
@@ -36,4 +35,4 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 
 ## Current Intercept Modes
 - `auto`: stable; browser download is canceled and handed to Khukri when bridge is available
-- `ask`: in-progress; intended to show a `Start in Khukri` / `Keep in Browser` prompt before handoff
+- `ask`: working; shows a `Start in Khukri` / `Keep in Browser` prompt before handoff, with the remaining caveat that Chrome may open the prompt as a normal tab instead of a popup

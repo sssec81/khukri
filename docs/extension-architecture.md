@@ -62,7 +62,7 @@ Service-worker capture:
 
 - `intercept_mode`: `'ask' | 'auto'`
 - `quality_preferences`: per-origin selected media quality
-- `dismissed_sites`: sites where the blade UI should stay hidden
+- `dismissed_sites`: per-origin dismissal expirations stored in `chrome.storage.local` with a 7-day TTL
 - `khukri_prompt_<token>`: transient prompt payload stored in `chrome.storage.session`
 - `khukri_retry_queue`: transient retry queue stored in `chrome.storage.session`
 

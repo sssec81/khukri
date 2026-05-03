@@ -189,6 +189,7 @@ Sprint 4 extension state:
 - The Manifest V3 extension includes a working `ask` prompt flow plus stable `auto` interception mode
 - Blade-triggered media downloads prefer captured `videoplayback` or playlist URLs, then fall back to the watch URL for `yt-dlp`
 - Prompt payloads and the retry queue now use `chrome.storage.session` for MV3-safe transient state
+- Blade dismissals persist per origin with a 7-day TTL instead of resetting on extension startup
 - The main unresolved browser UX issue is Chrome/Brave opening the prompt page as a tab instead of a popup
 
 ---

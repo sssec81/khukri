@@ -1,6 +1,8 @@
 (function () {
     const PILL_ID = 'khukri-blade-pill';
     const PROMPT_ID = 'khukri-download-prompt';
+    const DISMISSED_SITES_KEY = 'dismissed_sites';
+    const DISMISSED_SITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
     const QUALITY_STORAGE_KEY = 'quality_preferences';
     const QUALITY_DEFAULT = 'best';
     const QUALITY_OPTIONS = [
@@ -257,6 +259,27 @@
         }
     }
 
+    function readDismissedSites(result) {
+        const raw = result?.[DISMISSED_SITES_KEY];
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+        const now = Date.now();
+        const active = {};
+        for (const [origin, expiresAt] of Object.entries(raw)) {
+            if (typeof expiresAt === 'number' && expiresAt > now) {
+                active[origin] = expiresAt;
+            }
+        }
+        return active;
+    }
+
+    function writeDismissedSites(sites) {
+        if (!sites || Object.keys(sites).length === 0) {
+            return safeStorageSet({ [DISMISSED_SITES_KEY]: {} });
+        }
+        return safeStorageSet({ [DISMISSED_SITES_KEY]: sites });
+    }
+
     function safeSendMessage(message) {
         if (!hasExtensionContext()) return false;
         try {
@@ -349,10 +372,10 @@
     function dismiss(pill, origin) {
         pill.classList.add('kh-dismissing');
         pill.addEventListener('animationend', () => pill.remove(), { once: true });
-        safeStorageGet(['dismissed_sites'], (result) => {
-            const next = Array.isArray(result.dismissed_sites) ? result.dismissed_sites.slice() : [];
-            if (!next.includes(origin)) next.push(origin);
-            safeStorageSet({ dismissed_sites: next });
+        safeStorageGet([DISMISSED_SITES_KEY], (result) => {
+            const next = readDismissedSites(result);
+            next[origin] = Date.now() + DISMISSED_SITE_TTL_MS;
+            writeDismissedSites(next);
         });
     }
 
@@ -381,8 +404,14 @@
     function injectPill() {
         const origin = location.origin;
 
-        if (!safeStorageGet(['dismissed_sites'], (result) => {
-            if (result.dismissed_sites && result.dismissed_sites.includes(origin)) return;
+        if (!safeStorageGet([DISMISSED_SITES_KEY], (result) => {
+            const dismissedSites = readDismissedSites(result);
+            if (dismissedSites[origin]) {
+                if (Object.keys(dismissedSites).length !== Object.keys(result?.[DISMISSED_SITES_KEY] || {}).length) {
+                    writeDismissedSites(dismissedSites);
+                }
+                return;
+            }
             if (document.getElementById(PILL_ID)) return;
 
             ensureStyle();
