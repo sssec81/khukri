@@ -51,32 +51,40 @@ const FALLBACK_STRINGS = {
   "settings.reset": "Reset to defaults",
   "settings.save": "Save Settings",
   "settings.saved": "Settings saved.",
+  "settings.unsaved": "Unsaved changes",
   "settings.general.title": "General",
   "settings.general.copy": "Pick where downloads land and how many you want running in parallel later.",
   "settings.general.pathLabel": "Default download path",
+  "settings.general.pathHint": "Where Khukri stores new downloads by default.",
   "settings.general.concurrentLabel": "Max concurrent downloads",
+  "settings.general.concurrentHint": "Choose how many downloads can run at the same time.",
   "settings.general.ytdlpAutoUpdateLabel": "Automatically check for yt-dlp updates",
   "settings.general.ytdlpActionsLabel": "yt-dlp",
   "settings.general.ytdlpCheckNow": "Check now",
   "settings.performance.title": "Performance",
   "settings.performance.copy": "Set per-download overrides that new downloads will inherit.",
-  "settings.performance.threadsLabel": "Thread override",
-  "settings.performance.bandwidthLabel": "Bandwidth cap (bytes/sec)",
+  "settings.performance.threadsLabel": "Worker threads",
+  "settings.performance.threadsHint": "Leave blank to let Khukri choose automatically.",
+  "settings.performance.bandwidthLabel": "Speed limit",
+  "settings.performance.bandwidthHint": "Optional. Leave blank for unlimited transfer speed.",
   "settings.scheduler.title": "Scheduler",
   "settings.scheduler.copy": "Reserve a time window for automated downloads.",
   "settings.scheduler.enabledLabel": "Enable scheduler window",
   "settings.scheduler.startLabel": "Start hour",
   "settings.scheduler.endLabel": "End hour",
+  "settings.scheduler.hint": "Queued downloads outside this window will wait until the schedule opens again.",
   "settings.proxy.title": "Proxy",
   "settings.proxy.copy": "Store proxy preferences now so the later networking work has a stable home.",
   "settings.proxy.enabledLabel": "Enable proxy",
   "settings.proxy.urlLabel": "Proxy URL",
+  "settings.proxy.urlHint": "Use only when your network requires a proxy or VPN route.",
   "settings.appearance.title": "Appearance",
   "settings.appearance.copy": "Choose how the desktop shell should resolve its theme.",
   "settings.appearance.themeLabel": "Theme",
   "settings.appearance.themeSystem": "Follow system",
   "settings.appearance.themeDark": "Dark",
   "settings.appearance.themeLight": "Light",
+  "settings.appearance.themeHint": "Match your system appearance automatically, or choose a fixed theme.",
   "onboarding.kicker": "Sprint 4 media notice",
   "onboarding.title": "Media tools require a one-time acknowledgment.",
   "onboarding.body": "yt-dlp functionality is provided as a technical capability. Compliance with the Terms of Service of any streaming platform is the user's responsibility. Khukri ships no credentials, no DRM bypass, and no circumvention of technical protection measures.",
@@ -92,6 +100,7 @@ let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
 let queueRefreshInFlight = false;
+let settingsDirty = false;
 
 function onboardingComplete(settings) {
   return Boolean(settings?.onboarding_complete);
@@ -247,7 +256,10 @@ function rowPrimaryAction(item) {
   if (status === "paused") {
     return "resume";
   }
-  if (status === "failed" || status === "cancelled" || status === "missing") {
+  if (status === "failed") {
+    return "retry";
+  }
+  if (status === "cancelled" || status === "missing") {
     return "remove";
   }
   return "pause";
@@ -306,6 +318,175 @@ function setOptimisticProgress(id, status) {
   });
 }
 
+function queueGroupForStatus(status) {
+  if (["active", "queued", "paused"].includes(status)) {
+    return "active";
+  }
+  if (status === "complete") {
+    return "complete";
+  }
+  return "failed";
+}
+
+function sectionHeading(group) {
+  if (group === "active") return "Active";
+  if (group === "failed") return "Failed";
+  return "Completed";
+}
+
+function formatProgressSummary(item) {
+  const parts = [];
+  const percent = `${Math.max(0, item.percent).toFixed(0)}%`;
+  parts.push(percent);
+  if (item.speedBps > 0) {
+    parts.push(`${formatBytes(item.speedBps)}/s`);
+  }
+  if (item.etaSeconds > 0) {
+    parts.push(`~${formatEta(item.etaSeconds)} remaining`);
+  }
+  if (item.totalBytes) {
+    const done = item.liveStatus === "complete"
+      ? item.totalBytes
+      : Math.min(item.bytesDone ?? 0, item.totalBytes);
+    parts.push(`${formatBytes(done)} / ${formatBytes(item.totalBytes)}`);
+  }
+  return parts.join(" • ");
+}
+
+function summarizeFailure(item) {
+  const raw = item.failureReason || "";
+  if (/sign in to confirm you('|’)re not a bot|cookies-from-browser|authentication/i.test(raw)) {
+    return {
+      title: "Sign-in required",
+      body: "YouTube challenged this request. Open the video in your browser, make sure playback works there, then retry in Khukri.",
+      detail: raw
+    };
+  }
+
+  if (/rate limit|too many requests|429/i.test(raw)) {
+    return {
+      title: "Temporarily rate limited",
+      body: "The site is throttling repeated requests right now. Waiting a bit before retrying usually helps.",
+      detail: raw
+    };
+  }
+
+  return {
+    title: "Download failed",
+    body: "Khukri could not complete this download. You can retry it or remove it from the queue.",
+    detail: raw
+  };
+}
+
+function buildRetryRequest(item) {
+  return {
+    url: item.url,
+    filePath: item.filePath,
+    priority: item.priority || "normal",
+    bytesPerSec: item.throttleBytesPerSec ?? null,
+    quality: item.mediaQuality || null,
+    source: item.requestSource || null
+  };
+}
+
+function renderDownloadCard(item, index, strings) {
+  const liveStatus = safeStatus(item.liveStatus ?? item.status);
+  const group = queueGroupForStatus(liveStatus);
+  const isPending = pendingActions.has(item.id);
+  const pendingAttrs = isPending ? " disabled aria-disabled=\"true\"" : "";
+  const percent = liveStatus === "complete" || liveStatus === "missing" ? 100 : item.percent;
+  const isIndeterminate = ["queued", "active"].includes(liveStatus)
+    && (item.bytesDone ?? 0) <= 0
+    && (!item.totalBytes || item.percent <= 0);
+  const progressFillClass = isIndeterminate
+    ? `progress-fill progress-fill--${liveStatus} progress-fill--indeterminate`
+    : `progress-fill progress-fill--${liveStatus}`;
+  const { ext, category } = fileExtInfo(item.filePath);
+  const escapedId = htmlEscape(item.id);
+  const escapedName = htmlEscape(baseName(item.filePath));
+  const escapedUrl = htmlEscape(item.url);
+  const statusLabel = liveStatus === "complete" ? "Done" : liveStatus;
+
+  let actions = "";
+  let extra = "";
+
+  if (group === "active") {
+    const primaryAction = liveStatus === "paused" ? "resume" : "pause";
+    const primaryLabel = liveStatus === "paused"
+      ? strings["downloads.actionResume"]
+      : strings["downloads.actionPause"];
+    const summary = formatProgressSummary(item);
+
+    actions = `
+      <div class="queue-card-actions">
+        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="${htmlEscape(primaryAction)}" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(primaryLabel)}</button>
+        <button class="queue-btn queue-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionCancel"])}</button>
+      </div>
+    `;
+
+    extra = `
+      <div class="queue-card-progress">
+        <div class="progress-track" aria-hidden="true">
+          <div class="${progressFillClass}" style="width:${isIndeterminate ? "35" : percent.toFixed(1)}%"></div>
+        </div>
+      </div>
+      <div class="queue-card-meta">${htmlEscape(summary)}</div>
+    `;
+  } else if (group === "failed") {
+    const failure = summarizeFailure(item);
+
+    actions = `
+      <div class="queue-card-actions">
+        ${liveStatus === "failed"
+          ? `<button class="queue-btn queue-btn-primary row-action" type="button" data-action="retry" data-id="${escapedId}"${pendingAttrs}>Retry</button>`
+          : ""}
+        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
+      </div>
+    `;
+
+    extra = `
+      <div class="queue-failure-panel">
+        <div class="queue-failure-title">${htmlEscape(failure.title)}</div>
+        <div class="queue-failure-copy">${htmlEscape(failure.body)}</div>
+        ${failure.detail ? `<details class="queue-failure-detail"><summary>View full error log</summary><div>${htmlEscape(failure.detail)}</div></details>` : ""}
+      </div>
+    `;
+  } else {
+    const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : "Unknown size";
+    actions = `
+      <div class="queue-card-actions">
+        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="open" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionOpen"])}</button>
+        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
+      </div>
+    `;
+
+    extra = `
+      <div class="queue-card-meta">${htmlEscape(sizeText)} • Completed</div>
+    `;
+  }
+
+  return `
+    <article class="download-item queue-card queue-card--${htmlEscape(group)}" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" data-status="${htmlEscape(liveStatus)}" aria-label="${escapedName}">
+      <div class="queue-card-rail"></div>
+      <div class="file-ext file-ext--${htmlEscape(category)}" aria-hidden="true">
+        ${htmlEscape(ext.toUpperCase())}
+        <div class="file-ext-dot"></div>
+      </div>
+      <div class="queue-card-body">
+        <div class="queue-card-head">
+          <div class="queue-card-heading">
+            <span class="queue-card-title">${escapedName}</span>
+            <span class="queue-card-url" title="${escapedUrl}">${escapedUrl}</span>
+          </div>
+          <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(statusLabel)}</span>
+        </div>
+        ${extra}
+        ${actions}
+      </div>
+    </article>
+  `;
+}
+
 function renderQueue(items) {
   const list = document.getElementById("downloadsList");
   const empty = document.getElementById("emptyState");
@@ -323,90 +504,27 @@ function renderQueue(items) {
   empty.hidden = true;
   list.hidden = false;
 
-  list.innerHTML = hydratedItems.map((item, index) => {
-    const action = rowPrimaryAction(item);
-    const canCancel = ["active", "queued", "paused"].includes(item.liveStatus);
-    const hasPrimaryAction = action !== "none";
-    const isPending = pendingActions.has(item.id);
+  const groups = {
+    active: hydratedItems.filter((item) => queueGroupForStatus(safeStatus(item.liveStatus ?? item.status)) === "active"),
+    failed: hydratedItems.filter((item) => queueGroupForStatus(safeStatus(item.liveStatus ?? item.status)) === "failed"),
+    complete: hydratedItems.filter((item) => queueGroupForStatus(safeStatus(item.liveStatus ?? item.status)) === "complete")
+  };
 
-    let actionLabel;
-    if (action === "open") {
-      actionLabel = strings["downloads.actionOpen"];
-    } else if (action === "resume") {
-      actionLabel = strings["downloads.actionResume"];
-    } else if (action === "remove") {
-      actionLabel = strings["actions.remove"];
-    } else if (action === "none") {
-      actionLabel = "";
-    } else {
-      actionLabel = strings["downloads.actionPause"];
-    }
-
-    const liveStatus = safeStatus(item.liveStatus ?? item.status);
-    const speedText = item.speedBps > 0 ? `${formatBytes(item.speedBps)}/s` : null;
-    const etaText = item.etaSeconds > 0 ? formatEta(item.etaSeconds) : null;
-    const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : null;
-    const failureText = item.failureReason || null;
-    const noticeText = liveStatus === "missing"
-      ? strings["downloads.fileMissing"]
-      : (liveStatus === "failed" && failureText
-        ? `${strings["downloads.failureLabel"]}: ${failureText}`
-        : null);
-    const percent = liveStatus === "complete" || liveStatus === "missing" ? 100 : item.percent;
-    const isIndeterminate = ["queued", "active"].includes(liveStatus)
-      && (item.bytesDone ?? 0) <= 0
-      && (!item.totalBytes || item.percent <= 0);
-    const progressFillClass = isIndeterminate
-      ? `progress-fill progress-fill--${liveStatus} progress-fill--indeterminate`
-      : `progress-fill progress-fill--${liveStatus}`;
-    const percentLabel = `${Math.max(0, percent).toFixed(0)}%`;
-    const { ext, category } = fileExtInfo(item.filePath);
-    const escapedId = htmlEscape(item.id);
-    const escapedBaseName = htmlEscape(baseName(item.filePath));
-    const escapedUrl = htmlEscape(item.url);
-    const escapedActionLabel = htmlEscape(actionLabel);
-    const escapedCancelLabel = htmlEscape(strings["downloads.actionCancel"]);
-    const escapedNoticeText = htmlEscape(noticeText);
-    const pendingAttrs = isPending ? " disabled aria-disabled=\"true\"" : "";
-
-    return `
-      <article class="download-item" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" data-status="${htmlEscape(liveStatus)}" aria-label="${escapedBaseName}">
-        <div class="file-ext file-ext--${htmlEscape(category)}" aria-hidden="true">
-          ${htmlEscape(ext.toUpperCase())}
-          <div class="file-ext-dot"></div>
+  let rowIndex = 0;
+  list.innerHTML = ["active", "failed", "complete"]
+    .filter((group) => groups[group].length > 0)
+    .map((group) => `
+      <section class="queue-section queue-section--${group}">
+        <header class="queue-section-head">
+          <span class="queue-section-marker" aria-hidden="true"></span>
+          <h3 class="queue-section-title">${sectionHeading(group)} <span>(${groups[group].length})</span></h3>
+        </header>
+        <div class="queue-section-list">
+          ${groups[group].map((item) => renderDownloadCard(item, rowIndex++, strings)).join("")}
         </div>
-        <div class="row-body">
-          <div class="row-top">
-            <span class="row-name">${escapedBaseName}</span>
-            <span class="pill pill--${liveStatus}">${htmlEscape(liveStatus)}</span>
-            <div class="row-actions">
-              ${hasPrimaryAction
-        ? `<button class="row-btn row-action" type="button" data-action="${htmlEscape(action)}" data-id="${escapedId}"${pendingAttrs}>${escapedActionLabel}</button>`
-        : ""}
-              ${canCancel ? `<button class="row-btn row-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${escapedCancelLabel}</button>` : ""}
-            </div>
-          </div>
-          <div class="row-mid">
-            <div class="progress-track" aria-hidden="true">
-              <div class="${progressFillClass}" style="width:${isIndeterminate ? "35" : percent.toFixed(1)}%"></div>
-            </div>
-            <span class="row-pct">${percentLabel}</span>
-          </div>
-          <div class="row-bot">
-            <span class="row-url" title="${escapedUrl}">${escapedUrl}</span>
-            <div class="row-stats">
-              ${speedText ? `<span class="row-stat row-stat--speed">${htmlEscape(speedText)}</span>` : ""}
-              ${etaText ? `<span class="row-stat">${htmlEscape(etaText)}</span>` : ""}
-              ${sizeText ? `<span class="row-stat">${htmlEscape(sizeText)}</span>` : ""}
-            </div>
-          </div>
-          ${noticeText
-        ? `<div class="row-error">${escapedNoticeText}</div>`
-        : ""}
-        </div>
-      </article>
-    `;
-  }).join("");
+      </section>
+    `)
+    .join("");
 
   if (focusedRowId) {
     list.querySelector(`[data-row-id="${focusedRowId}"]`)?.focus();
@@ -469,6 +587,50 @@ function populateSettingsForm(settings) {
   document.getElementById("settingsTheme").value = settings.appearance.theme || "system";
 }
 
+function canonicalSettings(settings) {
+  return JSON.stringify(settings);
+}
+
+function settingsMatchForm() {
+  if (!currentSettings) {
+    return true;
+  }
+  return canonicalSettings(collectSettingsForm()) === canonicalSettings(currentSettings);
+}
+
+function toggleSettingsDependencies() {
+  const schedulerEnabled = document.getElementById("settingsSchedulerEnabled").checked;
+  const proxyEnabled = document.getElementById("settingsProxyEnabled").checked;
+  document.getElementById("settingsSchedulerStart").disabled = !schedulerEnabled;
+  document.getElementById("settingsSchedulerEnd").disabled = !schedulerEnabled;
+  document.getElementById("settingsProxyUrl").disabled = !proxyEnabled;
+}
+
+function renderSettingsStatus() {
+  const statusNode = document.getElementById("settingsStatus");
+  const saveButton = document.getElementById("saveSettingsButton");
+  settingsDirty = !settingsMatchForm();
+  saveButton.disabled = !settingsDirty;
+  saveButton.setAttribute("aria-disabled", String(!settingsDirty));
+  document.body.classList.toggle("settings-dirty", settingsDirty);
+
+  if (!settingsDirty && !statusNode.dataset.state) {
+    statusNode.textContent = "";
+    return;
+  }
+
+  if (settingsDirty) {
+    statusNode.dataset.state = "dirty";
+    statusNode.innerHTML = `<span class="settings-status-dot" aria-hidden="true"></span>${htmlEscape(window.__KHUKRI_STRINGS__["settings.unsaved"])}`;
+    return;
+  }
+
+  if (statusNode.dataset.state === "dirty") {
+    statusNode.textContent = "";
+    delete statusNode.dataset.state;
+  }
+}
+
 function collectSettingsForm() {
   const readInt = (id) => {
     const value = document.getElementById(id).value.trim();
@@ -511,6 +673,8 @@ function applySettings(settings) {
   syncDownloadDefaults(settings);
   applyTheme(settings);
   toggleOnboarding(settings);
+  toggleSettingsDependencies();
+  renderSettingsStatus();
 }
 
 async function refreshQueue(strings, options = {}) {
@@ -575,6 +739,11 @@ async function handleRowAction(action, id) {
       renderQueue(currentQueue);
       await invoke("remove_download", { id });
       progressById.delete(id);
+    } else if (action === "retry") {
+      progressById.delete(id);
+      updateLocalDownloadState(id, (entry) => ({ ...entry, status: "queued", failureReason: null }));
+      renderQueue(currentQueue);
+      await invoke("start_download", { request: buildRetryRequest(item) });
     } else if (action === "open") {
       await invoke("open_download_folder", { filePath: item.filePath });
     }
@@ -602,11 +771,13 @@ async function handleRowAction(action, id) {
 async function saveSettings() {
   const strings = window.__KHUKRI_STRINGS__;
   const statusNode = document.getElementById("settingsStatus");
+  statusNode.dataset.state = "loading";
   statusNode.textContent = strings["status.loading"];
   const settings = collectSettingsForm();
   const nextSettings = await invoke("update_settings", { settings });
   currentSettings = nextSettings;
   applySettings(nextSettings);
+  statusNode.dataset.state = "saved";
   statusNode.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
 }
 
@@ -663,6 +834,7 @@ async function main() {
   const downloadsList = document.getElementById("downloadsList");
   const onboardingButton = document.getElementById("acknowledgeOnboarding");
   const checkYtdlpButton = document.getElementById("checkYtdlpNow");
+  const saveSettingsButton = document.getElementById("saveSettingsButton");
 
   showView("downloads");
   registerThemeWatcher();
@@ -686,17 +858,22 @@ async function main() {
   });
 
   onboardingButton?.addEventListener("click", () => {
+    settingsStatus.dataset.state = "loading";
     settingsStatus.textContent = strings["status.loading"];
     void acknowledgeOnboarding().then(() => {
+      settingsStatus.dataset.state = "saved";
       settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
     }).catch((error) => {
+      settingsStatus.dataset.state = "failed";
       settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 
   checkYtdlpButton?.addEventListener("click", () => {
+    settingsStatus.dataset.state = "loading";
     settingsStatus.textContent = strings["ytdlp.updateStarted"];
     void checkYtdlpNow().catch((error) => {
+      settingsStatus.dataset.state = "failed";
       settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
@@ -730,28 +907,59 @@ async function main() {
     void invoke("pick_folder").then((picked) => {
       if (picked) {
         document.getElementById("settingsDefaultPath").value = picked;
+        renderSettingsStatus();
       }
     }).catch((error) => {
+      settingsStatus.dataset.state = "failed";
       settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 
   settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!settingsDirty) {
+      return;
+    }
     void saveSettings().catch((error) => {
+      settingsStatus.dataset.state = "failed";
       settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 
+  settingsForm.addEventListener("input", () => {
+    toggleSettingsDependencies();
+    renderSettingsStatus();
+  });
+
+  settingsForm.addEventListener("change", () => {
+    toggleSettingsDependencies();
+    renderSettingsStatus();
+  });
+
   document.querySelectorAll(".reset-section").forEach((button) => {
     button.addEventListener("click", () => {
+      const sectionName = button.closest(".settings-section")?.querySelector(".section-label")?.textContent || "this section";
+      if (!window.confirm(`Reset ${sectionName} to defaults?`)) {
+        return;
+      }
+      settingsStatus.dataset.state = "loading";
       settingsStatus.textContent = strings["status.loading"];
       void resetSettingsSection(button.dataset.section).then(() => {
+        settingsStatus.dataset.state = "saved";
         settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
       }).catch((error) => {
+        settingsStatus.dataset.state = "failed";
         settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
       });
     });
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!settingsDirty) {
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = "";
   });
 
   refreshButton.addEventListener("click", () => {
@@ -875,6 +1083,7 @@ async function main() {
         return;
       }
       if (event.payload.kind === "updated") {
+        settingsStatus.dataset.state = "saved";
         settingsStatus.textContent = event.payload.message || strings["ytdlp.updateApplied"];
         void invoke("get_settings").then((settings) => {
           applySettings(settings);
@@ -882,6 +1091,7 @@ async function main() {
         return;
       }
       if (event.payload.kind === "noop") {
+        settingsStatus.dataset.state = "saved";
         settingsStatus.textContent = event.payload.message || strings["ytdlp.updateNoop"];
         void invoke("get_settings").then((settings) => {
           applySettings(settings);
@@ -889,6 +1099,7 @@ async function main() {
         return;
       }
       if (event.payload.kind === "failed") {
+        settingsStatus.dataset.state = "failed";
         settingsStatus.textContent = event.payload.message || strings["status.failed"];
       }
     });

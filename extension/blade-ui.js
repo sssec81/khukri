@@ -41,27 +41,29 @@
 
         #${PILL_ID} {
             position: absolute;
-            top: 16px;
-            right: 16px;
+            top: 18px;
+            right: 18px;
             z-index: 2147483647;
             display: flex;
-            flex-direction: column;
-            align-items: stretch;
+            align-items: center;
             cursor: pointer;
-            border-radius: 16px;
+            min-width: 304px;
+            max-width: 356px;
+            border-radius: 18px;
             overflow: hidden;
             background:
-                linear-gradient(145deg, rgba(45, 90, 39, 0.96), rgba(17, 18, 22, 0.96));
-            border: 1px solid rgba(255, 159, 28, 0.34);
+                radial-gradient(circle at top left, rgba(255, 166, 43, 0.16), transparent 34%),
+                linear-gradient(155deg, rgba(34, 61, 30, 0.97), rgba(15, 18, 22, 0.98) 58%);
+            border: 1px solid rgba(255, 166, 43, 0.42);
             box-shadow:
-                0 14px 34px rgba(0, 0, 0, 0.4),
-                0 0 0 1px rgba(45, 90, 39, 0.28);
-            font-family: -apple-system, 'SF Pro Display', 'Segoe UI Variable Display',
+                0 22px 52px rgba(0, 0, 0, 0.42),
+                0 0 0 1px rgba(255, 184, 77, 0.08) inset;
+            font-family: "Segoe UI Variable Display", "Aptos", -apple-system, 'SF Pro Display',
                          BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
             user-select: none;
             outline: none;
-            backdrop-filter: blur(18px) saturate(1.25);
-            -webkit-backdrop-filter: blur(18px) saturate(1.25);
+            backdrop-filter: blur(20px) saturate(1.24);
+            -webkit-backdrop-filter: blur(20px) saturate(1.24);
             animation: khukri-in 0.32s cubic-bezier(0.34, 1.4, 0.64, 1) both;
             transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
         }
@@ -71,151 +73,196 @@
             position: absolute;
             inset: 0;
             background: linear-gradient(
-                100deg,
+                110deg,
                 transparent 20%,
-                rgba(255, 159, 28, 0.08) 50%,
+                rgba(255, 184, 77, 0.08) 50%,
                 transparent 80%
             );
             background-size: 300% 100%;
-            animation: khukri-shimmer 4s ease infinite;
+            animation: khukri-shimmer 5.4s ease infinite;
             pointer-events: none;
         }
 
         #${PILL_ID}:hover {
-            transform: translateY(-1px);
-            border-color: rgba(255, 159, 28, 0.6);
+            transform: translateY(-2px);
+            border-color: rgba(255, 184, 77, 0.68);
             box-shadow:
-                0 18px 38px rgba(0, 0, 0, 0.45),
-                0 0 0 1px rgba(255, 159, 28, 0.18);
-        }
-
-        #${PILL_ID}:hover .kh-quality-wrap,
-        #${PILL_ID}:focus-within .kh-quality-wrap {
-            opacity: 1;
-            transform: translateY(0);
-            pointer-events: auto;
+                0 26px 56px rgba(0, 0, 0, 0.46),
+                0 0 0 1px rgba(255, 184, 77, 0.14) inset;
         }
 
         #${PILL_ID} .kh-main {
-            display: inline-flex;
-            align-items: stretch;
+            display: grid;
+            grid-template-columns: 48px minmax(0, 1fr) max-content 34px;
+            align-items: center;
+            min-height: 56px;
+            width: 100%;
         }
 
         #${PILL_ID} .kh-icon-zone {
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 52px;
-            background: rgba(255, 159, 28, 0.12);
-            border-right: 1px solid rgba(255, 159, 28, 0.12);
+            align-self: stretch;
+            background:
+                linear-gradient(180deg, rgba(255, 166, 43, 0.18), rgba(255, 166, 43, 0.08));
+            border-right: 1px solid rgba(255, 184, 77, 0.14);
         }
 
         #${PILL_ID} .kh-icon-circle {
             width: 30px;
             height: 30px;
             border-radius: 50%;
-            background: rgba(255, 159, 28, 0.12);
-            border: 1px solid rgba(255, 159, 28, 0.26);
+            background:
+                linear-gradient(180deg, rgba(255, 176, 74, 0.18), rgba(255, 159, 28, 0.08));
+            border: 1px solid rgba(255, 184, 77, 0.34);
             display: flex;
             align-items: center;
             justify-content: center;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
         }
 
         #${PILL_ID} .kh-content {
             display: flex;
             flex-direction: column;
             justify-content: center;
-            padding: 12px 15px 12px 13px;
-            gap: 4px;
+            padding: 8px 6px 8px 12px;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        #${PILL_ID} .kh-kicker {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: rgba(255, 245, 224, 0.5);
+            white-space: nowrap;
         }
 
         #${PILL_ID} .kh-title {
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 700;
-            line-height: 1;
+            line-height: 1.1;
             color: #fff;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            letter-spacing: -0.02em;
         }
 
         #${PILL_ID} .kh-brand {
-            color: #FF9F1C;
+            color: #ffad32;
         }
 
         #${PILL_ID} .kh-sub {
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 700;
-            letter-spacing: 0.08em;
-            color: rgba(255, 255, 255, 0.68);
+            letter-spacing: 0.14em;
+            color: rgba(241, 247, 238, 0.64);
+            text-transform: uppercase;
             white-space: nowrap;
-        }
-
-        #${PILL_ID} .kh-sep {
-            width: 1px;
-            background: rgba(255, 255, 255, 0.08);
-            margin: 10px 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         #${PILL_ID} .kh-close {
             display: flex;
             align-items: center;
             justify-content: center;
-            width: 40px;
+            align-self: stretch;
             background: none;
             border: none;
             cursor: pointer;
-            color: rgba(255, 255, 255, 0.3);
+            color: rgba(255, 255, 255, 0.34);
             transition: color 0.15s ease, background 0.15s ease;
         }
 
         #${PILL_ID} .kh-close:hover {
             color: rgba(255, 255, 255, 0.82);
-            background: rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.05);
         }
 
         #${PILL_ID} .kh-quality-wrap {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 10px 12px 12px;
-            border-top: 1px solid rgba(255, 255, 255, 0.08);
-            background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.12));
-            opacity: 0;
-            transform: translateY(-6px);
-            pointer-events: none;
-            transition: opacity 0.16s ease, transform 0.16s ease;
+            gap: 0;
+            justify-content: flex-end;
+            padding: 0 6px 0 0;
+            min-width: 0;
+            width: 100%;
+            position: relative;
         }
 
         #${PILL_ID} .kh-quality-label {
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 700;
-            letter-spacing: 0.08em;
-            color: rgba(255, 255, 255, 0.6);
+            letter-spacing: 0.14em;
+            color: rgba(255, 245, 224, 0.52);
             text-transform: uppercase;
             white-space: nowrap;
+            display: none;
         }
 
         #${PILL_ID} .kh-quality-select {
-            flex: 1 1 auto;
-            min-width: 0;
-            border: 1px solid rgba(255, 159, 28, 0.24);
-            border-radius: 10px;
-            background: rgba(9, 10, 14, 0.72);
+            width: 88px;
+            min-width: 88px;
+            max-width: 104px;
+            border: 1px solid rgba(255, 184, 77, 0.22);
+            border-radius: 999px;
+            background: rgba(10, 12, 16, 0.72);
             color: #fff;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
-            padding: 8px 10px;
+            height: 34px;
+            padding: 0 10px;
             outline: none;
             cursor: pointer;
+            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+            transition: width 0.16s ease, min-width 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
         }
 
         #${PILL_ID} .kh-quality-select:focus {
-            border-color: rgba(255, 159, 28, 0.65);
-            box-shadow: 0 0 0 2px rgba(255, 159, 28, 0.15);
+            border-color: rgba(255, 184, 77, 0.7);
+            box-shadow: 0 0 0 3px rgba(255, 184, 77, 0.14);
+        }
+
+        #${PILL_ID}:hover .kh-quality-select,
+        #${PILL_ID}:focus-within .kh-quality-select {
+            width: 104px;
+            min-width: 104px;
         }
 
         #${PILL_ID}.kh-dismissing {
             animation: khukri-out 0.22s cubic-bezier(0.4, 0, 1, 1) both !important;
             pointer-events: none;
+        }
+
+        @media (max-width: 960px) {
+            #${PILL_ID} {
+                top: 12px;
+                right: 12px;
+                min-width: 280px;
+                max-width: min(332px, calc(100vw - 24px));
+            }
+
+            #${PILL_ID} .kh-main {
+                grid-template-columns: 44px minmax(0, 1fr) max-content 32px;
+                min-height: 52px;
+            }
+
+            #${PILL_ID} .kh-quality-select {
+                width: 82px;
+                min-width: 82px;
+                height: 32px;
+                font-size: 11px;
+            }
+
+            #${PILL_ID}:hover .kh-quality-select,
+            #${PILL_ID}:focus-within .kh-quality-select {
+                width: 92px;
+                min-width: 92px;
+            }
         }
     `;
 
@@ -435,6 +482,9 @@
 
             const content = document.createElement('div');
             content.className = 'kh-content';
+            const kicker = document.createElement('div');
+            kicker.className = 'kh-kicker';
+            kicker.textContent = 'Quick Save';
             const title = document.createElement('div');
             title.className = 'kh-title';
             title.appendChild(document.createTextNode('Download '));
@@ -445,11 +495,9 @@
             const sub = document.createElement('div');
             sub.className = 'kh-sub';
             sub.textContent = subtitleForQuality(activeQuality);
+            content.appendChild(kicker);
             content.appendChild(title);
             content.appendChild(sub);
-
-            const sep = document.createElement('div');
-            sep.className = 'kh-sep';
 
             const closeBtn = document.createElement('button');
             closeBtn.className = 'kh-close';
@@ -459,9 +507,6 @@
 
             main.appendChild(iconZone);
             main.appendChild(content);
-            main.appendChild(sep);
-            main.appendChild(closeBtn);
-
             const qualityWrap = document.createElement('div');
             qualityWrap.className = 'kh-quality-wrap';
             const qualityLabel = document.createElement('span');
@@ -480,8 +525,9 @@
             qualityWrap.appendChild(qualityLabel);
             qualityWrap.appendChild(qualitySelect);
 
+            main.appendChild(qualityWrap);
+            main.appendChild(closeBtn);
             pill.appendChild(main);
-            pill.appendChild(qualityWrap);
 
             closeBtn.addEventListener('click', (event) => {
                 event.stopPropagation();

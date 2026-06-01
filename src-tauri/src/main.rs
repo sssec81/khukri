@@ -529,11 +529,14 @@ async fn persist_queued_download(
     pool: &SqlitePool,
     request: &StartDownloadRequest,
     settings: &AppSettings,
+    existing_id: Option<&str>,
 ) -> Result<DownloadListItem, String> {
     let request = request_with_settings(request.clone(), settings);
     let output_path = normalize_output_path(&request.file_path, settings, &request.url);
     let output_path_string = output_path.to_string_lossy().to_string();
-    let id = download_id_for(&request.url, &output_path_string);
+    let id = existing_id
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| download_id_for(&request.url, &output_path_string));
     let priority = parse_priority(request.priority.as_deref());
 
     if let Some(parent) = output_path.parent() {
@@ -622,6 +625,7 @@ async fn promote_pending_downloads_with_parts(
             cancelled.clone(),
             settings.clone(),
             request,
+            None,
         )
         .await
         {
@@ -672,12 +676,15 @@ async fn start_or_queue_download(
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
     request: StartDownloadRequest,
+    existing_id: Option<String>,
 ) -> Result<DownloadListItem, String> {
     let settings_snapshot = settings.lock().await.clone();
     let request = request_with_settings(request, &settings_snapshot);
     let output_path = normalize_output_path(&request.file_path, &settings_snapshot, &request.url);
     let output_path_string = output_path.to_string_lossy().to_string();
-    let requested_id = download_id_for(&request.url, &output_path_string);
+    let requested_id = existing_id
+        .clone()
+        .unwrap_or_else(|| download_id_for(&request.url, &output_path_string));
     let max_concurrent = settings_snapshot.general.max_concurrent as usize;
 
     // Acquire lock once and hold it through duplicate check and concurrency limit check
@@ -692,13 +699,19 @@ async fn start_or_queue_download(
 
     if !is_scheduler_window_open(&settings_snapshot) || active_guard.len() >= max_concurrent {
         drop(active_guard);
-        let snapshot = persist_queued_download(&pool, &request, &settings_snapshot).await?;
+        let snapshot = persist_queued_download(
+            &pool,
+            &request,
+            &settings_snapshot,
+            existing_id.as_deref(),
+        )
+        .await?;
         emit_queue_updated(&app, &pool).await?;
         return Ok(snapshot);
     }
 
     drop(active_guard);
-    start_managed_download(app, pool, active, cancelled, settings, request).await
+    start_managed_download(app, pool, active, cancelled, settings, request, existing_id).await
 }
 
 fn open_path_in_explorer(path: &Path) -> Result<(), String> {
@@ -736,6 +749,7 @@ async fn start_managed_download(
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
     request: StartDownloadRequest,
+    existing_id: Option<String>,
 ) -> Result<DownloadListItem, String> {
     let settings_snapshot = settings.lock().await.clone();
     let request = request_with_settings(request, &settings_snapshot);
@@ -756,6 +770,7 @@ async fn start_managed_download(
             output_path,
             output_path_string,
             priority,
+            existing_id,
         )
         .await;
     }
@@ -879,9 +894,10 @@ async fn start_managed_media_download(
     output_path: PathBuf,
     output_path_string: String,
     priority: Priority,
+    existing_id: Option<String>,
 ) -> Result<DownloadListItem, String> {
     let quality = MediaQuality::parse(request.quality.as_deref());
-    let id = download_id_for(&request.url, &output_path_string);
+    let id = existing_id.unwrap_or_else(|| download_id_for(&request.url, &output_path_string));
     let headers = browser_headers(request.source.as_deref(), request.custom_headers.clone());
 
     db::upsert_download(
@@ -1062,6 +1078,7 @@ async fn resume_all_downloads(app: tauri::AppHandle, state: &AppState) -> Result
             state.cancelled.clone(),
             state.settings.clone(),
             request,
+            Some(row.id.clone()),
         )
         .await
         {
@@ -1166,6 +1183,7 @@ async fn start_download(
         state.cancelled.clone(),
         state.settings.clone(),
         request,
+        None,
     )
     .await
 }
@@ -1244,6 +1262,7 @@ async fn resume_download(
         state.cancelled.clone(),
         state.settings.clone(),
         request,
+        Some(row.id.clone()),
     )
     .await
 }

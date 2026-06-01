@@ -185,7 +185,7 @@
           <h2 class="view-title" data-i18n="settings.title"></h2>
           <div class="toolbar-actions">
             <p id="settingsStatus" class="view-status view-status--inline" aria-live="polite"></p>
-            <button class="primary-button" form="settingsForm" type="submit" data-i18n="settings.save"></button>
+            <button id="saveSettingsButton" class="primary-button" form="settingsForm" type="submit" data-i18n="settings.save"></button>
           </div>
         </header>
 
@@ -209,10 +209,12 @@
                       Browse
                     </button>
                   </div>
+                  <p class="field-hint" data-i18n="settings.general.pathHint"></p>
                 </div>
                 <label class="field">
                   <span data-i18n="settings.general.concurrentLabel"></span>
                   <input id="settingsMaxConcurrent" name="generalMaxConcurrent" type="number" min="1" max="16" step="1">
+                  <p class="field-hint" data-i18n="settings.general.concurrentHint"></p>
                 </label>
                 <label class="field checkbox-field">
                   <input id="settingsYtdlpAutoUpdate" name="settingsYtdlpAutoUpdate" type="checkbox">
@@ -220,7 +222,9 @@
                 </label>
                 <div class="field">
                   <span data-i18n="settings.general.ytdlpActionsLabel"></span>
-                  <button id="checkYtdlpNow" class="ghost-btn ghost-btn-wide" type="button" data-i18n="settings.general.ytdlpCheckNow"></button>
+                  <div class="settings-inline-action">
+                    <button id="checkYtdlpNow" class="ghost-btn ghost-btn-wide" type="button" data-i18n="settings.general.ytdlpCheckNow"></button>
+                  </div>
                 </div>
               </div>
             </article>
@@ -233,11 +237,13 @@
               <div class="settings-section-body">
                 <label class="field">
                   <span data-i18n="settings.performance.threadsLabel"></span>
-                  <input id="settingsThreadOverride" name="performanceThreadOverride" type="number" min="1" max="128" step="1">
+                  <input id="settingsThreadOverride" name="performanceThreadOverride" type="number" min="1" max="128" step="1" placeholder="Auto">
+                  <p class="field-hint" data-i18n="settings.performance.threadsHint"></p>
                 </label>
                 <label class="field">
                   <span data-i18n="settings.performance.bandwidthLabel"></span>
-                  <input id="settingsBandwidthCap" name="performanceBandwidthCap" type="number" min="0" step="1">
+                  <input id="settingsBandwidthCap" name="performanceBandwidthCap" type="number" min="0" step="1" placeholder="Leave blank for unlimited">
+                  <p class="field-hint" data-i18n="settings.performance.bandwidthHint"></p>
                 </label>
               </div>
             </article>
@@ -262,6 +268,7 @@
                     <input id="settingsSchedulerEnd" name="schedulerEnd" type="number" min="0" max="23" step="1">
                   </label>
                 </div>
+                <p class="field-hint" data-i18n="settings.scheduler.hint"></p>
               </div>
             </article>
 
@@ -278,6 +285,7 @@
                 <label class="field">
                   <span data-i18n="settings.proxy.urlLabel"></span>
                   <input id="settingsProxyUrl" name="proxyUrl" type="text" placeholder="http://127.0.0.1:8080">
+                  <p class="field-hint" data-i18n="settings.proxy.urlHint"></p>
                 </label>
               </div>
             </article>
@@ -295,6 +303,7 @@
                     <option value="dark" data-i18n="settings.appearance.themeDark"></option>
                     <option value="light" data-i18n="settings.appearance.themeLight"></option>
                   </select>
+                  <p class="field-hint" data-i18n="settings.appearance.themeHint"></p>
                 </label>
               </div>
             </article>
