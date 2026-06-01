@@ -1,14 +1,14 @@
 const FALLBACK_STRINGS = {
-  "app.kicker": "Sprint 3",
-  "app.title": "Khukri Handle",
-  "app.subtitle": "A minimal Tauri shell wired to the real engine so the downloads list, commands, and settings flow can land on a solid base.",
+  "app.kicker": "Khukri",
+  "app.title": "Khukri",
+  "app.subtitle": "Fast, local-first downloads with a clean queue and no noise.",
   "nav.downloads": "All Downloads",
   "nav.settings": "Settings",
-  "hero.eyebrow": "KHU-301",
-  "hero.title": "The engine is now wired into a desktop shell.",
-  "hero.copy": "This starter surface is intentionally small: queue reads, start download, and progress events are all connected so Sprint 3 can grow ticket by ticket.",
-  "composer.title": "Queue a download",
-  "composer.copy": "Use a direct file URL to verify the end-to-end Tauri command path.",
+  "hero.eyebrow": "Downloads",
+  "hero.title": "Drop in a link. Khukri handles the rest.",
+  "hero.copy": "Direct files and media links share one queue, one history, and one place to recover when the network misbehaves.",
+  "composer.title": "New download",
+  "composer.copy": "Paste a direct file or media link and choose where it should land.",
   "composer.urlLabel": "Download URL",
   "composer.outputLabel": "Output path",
   "composer.priorityLabel": "Priority",
@@ -27,9 +27,9 @@ const FALLBACK_STRINGS = {
   "actions.new_download": "New Download",
   "actions.remove": "Remove",
   "downloads.title": "Current queue",
-  "downloads.copy": "Rows here come from the SQLite-backed engine state, not mock data.",
+  "downloads.copy": "Every transfer lands in one durable queue.",
   "downloads.emptyTitle": "No downloads yet",
-  "downloads.emptyCopy": "Start one from the form above and it will appear here once the engine writes the queue row.",
+  "downloads.emptyCopy": "Use New Download or the browser extension. Active, failed, and completed items will stay organized here.",
   "downloads.priorityValue": "Priority",
   "downloads.totalBytesValue": "Total bytes",
   "downloads.unknownBytes": "unknown",
@@ -47,13 +47,13 @@ const FALLBACK_STRINGS = {
   "status.started": "Download queued.",
   "status.failed": "Something went wrong. Check the Rust console for details.",
   "settings.title": "Settings",
-  "settings.copy": "Changes persist to the desktop app data directory and apply to new downloads immediately.",
+  "settings.copy": "Tune where files land, how Khukri uses bandwidth, and how media helpers behave.",
   "settings.reset": "Reset to defaults",
   "settings.save": "Save Settings",
   "settings.saved": "Settings saved.",
   "settings.unsaved": "Unsaved changes",
   "settings.general.title": "General",
-  "settings.general.copy": "Pick where downloads land and how many you want running in parallel later.",
+  "settings.general.copy": "Choose where downloads land and how many can run at once.",
   "settings.general.pathLabel": "Default download path",
   "settings.general.pathHint": "Where Khukri stores new downloads by default.",
   "settings.general.concurrentLabel": "Max concurrent downloads",
@@ -74,7 +74,7 @@ const FALLBACK_STRINGS = {
   "settings.scheduler.endLabel": "End hour",
   "settings.scheduler.hint": "Queued downloads outside this window will wait until the schedule opens again.",
   "settings.proxy.title": "Proxy",
-  "settings.proxy.copy": "Store proxy preferences now so the later networking work has a stable home.",
+  "settings.proxy.copy": "Route downloads through a proxy when your network needs one.",
   "settings.proxy.enabledLabel": "Enable proxy",
   "settings.proxy.urlLabel": "Proxy URL",
   "settings.proxy.urlHint": "Use only when your network requires a proxy or VPN route.",
@@ -85,7 +85,7 @@ const FALLBACK_STRINGS = {
   "settings.appearance.themeDark": "Dark",
   "settings.appearance.themeLight": "Light",
   "settings.appearance.themeHint": "Match your system appearance automatically, or choose a fixed theme.",
-  "onboarding.kicker": "Sprint 4 media notice",
+  "onboarding.kicker": "Media notice",
   "onboarding.title": "Media tools require a one-time acknowledgment.",
   "onboarding.body": "yt-dlp functionality is provided as a technical capability. Compliance with the Terms of Service of any streaming platform is the user's responsibility. Khukri ships no credentials, no DRM bypass, and no circumvention of technical protection measures.",
   "onboarding.accept": "I Understand",
@@ -101,6 +101,7 @@ let currentSettings = null;
 let currentView = "downloads";
 let queueRefreshInFlight = false;
 let settingsDirty = false;
+let renderQueueFrame = null;
 
 function onboardingComplete(settings) {
   return Boolean(settings?.onboarding_complete);
@@ -334,6 +335,56 @@ function sectionHeading(group) {
   return "Completed";
 }
 
+function statusLabel(status) {
+  const labels = {
+    active: "Downloading",
+    queued: "Queued",
+    paused: "Paused",
+    complete: "Done",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    missing: "Missing"
+  };
+  return labels[status] || status;
+}
+
+function qualityLabel(value) {
+  const labels = {
+    best: "Best",
+    "1080p": "1080p",
+    "720p": "720p",
+    "audio-only": "Audio"
+  };
+  return labels[value] || "Direct";
+}
+
+function sourceLabel(value) {
+  const labels = {
+    blade: "Blade",
+    browser: "Browser",
+    stream: "Stream"
+  };
+  return labels[value] || "App";
+}
+
+function renderMetaChips(item, liveStatus) {
+  const chips = [
+    statusLabel(liveStatus),
+    qualityLabel(item.mediaQuality),
+    sourceLabel(item.requestSource)
+  ];
+
+  if (item.totalBytes) {
+    chips.push(formatBytes(item.totalBytes));
+  }
+
+  return `
+    <div class="queue-card-chips" aria-label="Download details">
+      ${chips.map((chip) => `<span class="queue-chip">${htmlEscape(chip)}</span>`).join("")}
+    </div>
+  `;
+}
+
 function formatProgressSummary(item) {
   const parts = [];
   const percent = `${Math.max(0, item.percent).toFixed(0)}%`;
@@ -349,6 +400,9 @@ function formatProgressSummary(item) {
       ? item.totalBytes
       : Math.min(item.bytesDone ?? 0, item.totalBytes);
     parts.push(`${formatBytes(done)} / ${formatBytes(item.totalBytes)}`);
+  }
+  if (!item.totalBytes && ["active", "queued"].includes(item.liveStatus)) {
+    parts.push("Waiting for size");
   }
   return parts.join(" • ");
 }
@@ -403,9 +457,10 @@ function renderDownloadCard(item, index, strings) {
     : `progress-fill progress-fill--${liveStatus}`;
   const { ext, category } = fileExtInfo(item.filePath);
   const escapedId = htmlEscape(item.id);
-  const escapedName = htmlEscape(baseName(item.filePath));
+  const fileName = baseName(item.filePath);
+  const escapedName = htmlEscape(fileName);
   const escapedUrl = htmlEscape(item.url);
-  const statusLabel = liveStatus === "complete" ? "Done" : liveStatus;
+  const pillLabel = statusLabel(liveStatus);
 
   let actions = "";
   let extra = "";
@@ -425,8 +480,9 @@ function renderDownloadCard(item, index, strings) {
     `;
 
     extra = `
+      ${renderMetaChips(item, liveStatus)}
       <div class="queue-card-progress">
-        <div class="progress-track" aria-hidden="true">
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${htmlEscape(Math.round(percent))}" aria-label="${htmlEscape(fileName)} progress">
           <div class="${progressFillClass}" style="width:${isIndeterminate ? "35" : percent.toFixed(1)}%"></div>
         </div>
       </div>
@@ -445,6 +501,7 @@ function renderDownloadCard(item, index, strings) {
     `;
 
     extra = `
+      ${renderMetaChips(item, liveStatus)}
       <div class="queue-failure-panel">
         <div class="queue-failure-title">${htmlEscape(failure.title)}</div>
         <div class="queue-failure-copy">${htmlEscape(failure.body)}</div>
@@ -461,6 +518,7 @@ function renderDownloadCard(item, index, strings) {
     `;
 
     extra = `
+      ${renderMetaChips(item, liveStatus)}
       <div class="queue-card-meta">${htmlEscape(sizeText)} • Completed</div>
     `;
   }
@@ -478,7 +536,7 @@ function renderDownloadCard(item, index, strings) {
             <span class="queue-card-title">${escapedName}</span>
             <span class="queue-card-url" title="${escapedUrl}">${escapedUrl}</span>
           </div>
-          <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(statusLabel)}</span>
+          <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
         </div>
         ${extra}
         ${actions}
@@ -488,6 +546,15 @@ function renderDownloadCard(item, index, strings) {
 }
 
 function renderQueue(items) {
+  if (renderQueueFrame) {
+    cancelAnimationFrame(renderQueueFrame);
+  }
+  renderQueueFrame = requestAnimationFrame(() => {
+    renderQueueSync(items);
+  });
+}
+
+function renderQueueSync(items) {
   const list = document.getElementById("downloadsList");
   const empty = document.getElementById("emptyState");
   const strings = window.__KHUKRI_STRINGS__;

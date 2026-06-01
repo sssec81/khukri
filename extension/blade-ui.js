@@ -11,6 +11,10 @@
         { value: '720p', label: '720p', subtitle: '720P CAP' },
         { value: 'audio-only', label: 'Audio Only', subtitle: 'MP3 EXTRACT' },
     ];
+    const QUALITY_HEIGHTS = {
+        '1080p': 1080,
+        '720p': 720,
+    };
     let showTimer = null;
 
     const ICON_DOWNLOAD = `
@@ -47,17 +51,19 @@
             display: flex;
             align-items: center;
             cursor: pointer;
-            min-width: 304px;
-            max-width: 356px;
-            border-radius: 18px;
+            min-width: 328px;
+            max-width: 390px;
+            border-radius: 20px;
             overflow: hidden;
             background:
-                radial-gradient(circle at top left, rgba(255, 166, 43, 0.16), transparent 34%),
-                linear-gradient(155deg, rgba(34, 61, 30, 0.97), rgba(15, 18, 22, 0.98) 58%);
-            border: 1px solid rgba(255, 166, 43, 0.42);
+                radial-gradient(circle at 9% 10%, rgba(255, 183, 72, 0.22), transparent 34%),
+                radial-gradient(circle at 95% 92%, rgba(72, 160, 80, 0.18), transparent 36%),
+                linear-gradient(150deg, rgba(38, 50, 31, 0.96), rgba(10, 13, 17, 0.98) 60%);
+            border: 1px solid rgba(255, 166, 43, 0.48);
             box-shadow:
-                0 22px 52px rgba(0, 0, 0, 0.42),
-                0 0 0 1px rgba(255, 184, 77, 0.08) inset;
+                0 24px 58px rgba(0, 0, 0, 0.46),
+                0 0 0 1px rgba(255, 184, 77, 0.12) inset,
+                0 0 36px rgba(255, 159, 28, 0.08);
             font-family: "Segoe UI Variable Display", "Aptos", -apple-system, 'SF Pro Display',
                          BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
             user-select: none;
@@ -65,7 +71,19 @@
             backdrop-filter: blur(20px) saturate(1.24);
             -webkit-backdrop-filter: blur(20px) saturate(1.24);
             animation: khukri-in 0.32s cubic-bezier(0.34, 1.4, 0.64, 1) both;
-            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+        }
+
+        #${PILL_ID}::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background:
+                linear-gradient(90deg, rgba(255, 159, 28, 0.18), transparent 26%),
+                linear-gradient(180deg, rgba(255,255,255,0.08), transparent 42%);
+            opacity: 0.55;
+            pointer-events: none;
         }
 
         #${PILL_ID}::after {
@@ -84,7 +102,7 @@
         }
 
         #${PILL_ID}:hover {
-            transform: translateY(-2px);
+            transform: translateY(-3px);
             border-color: rgba(255, 184, 77, 0.68);
             box-shadow:
                 0 26px 56px rgba(0, 0, 0, 0.46),
@@ -93,10 +111,12 @@
 
         #${PILL_ID} .kh-main {
             display: grid;
-            grid-template-columns: 48px minmax(0, 1fr) max-content 34px;
+            grid-template-columns: 52px minmax(0, 1fr) max-content 34px;
             align-items: center;
-            min-height: 56px;
+            min-height: 60px;
             width: 100%;
+            position: relative;
+            z-index: 1;
         }
 
         #${PILL_ID} .kh-icon-zone {
@@ -107,11 +127,22 @@
             background:
                 linear-gradient(180deg, rgba(255, 166, 43, 0.18), rgba(255, 166, 43, 0.08));
             border-right: 1px solid rgba(255, 184, 77, 0.14);
+            position: relative;
+        }
+
+        #${PILL_ID} .kh-icon-zone::after {
+            content: '';
+            position: absolute;
+            right: -1px;
+            top: 16%;
+            width: 1px;
+            height: 68%;
+            background: linear-gradient(180deg, transparent, rgba(255, 184, 77, 0.5), transparent);
         }
 
         #${PILL_ID} .kh-icon-circle {
-            width: 30px;
-            height: 30px;
+            width: 32px;
+            height: 32px;
             border-radius: 50%;
             background:
                 linear-gradient(180deg, rgba(255, 176, 74, 0.18), rgba(255, 159, 28, 0.08));
@@ -119,15 +150,17 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+            box-shadow:
+                0 8px 18px rgba(0, 0, 0, 0.24),
+                0 0 20px rgba(255, 159, 28, 0.14);
         }
 
         #${PILL_ID} .kh-content {
             display: flex;
             flex-direction: column;
             justify-content: center;
-            padding: 8px 6px 8px 12px;
-            gap: 2px;
+            padding: 9px 6px 9px 12px;
+            gap: 3px;
             min-width: 0;
         }
 
@@ -141,7 +174,7 @@
         }
 
         #${PILL_ID} .kh-title {
-            font-size: 13px;
+            font-size: 13.5px;
             font-weight: 700;
             line-height: 1.1;
             color: #fff;
@@ -153,6 +186,7 @@
 
         #${PILL_ID} .kh-brand {
             color: #ffad32;
+            text-shadow: 0 0 18px rgba(255, 159, 28, 0.32);
         }
 
         #${PILL_ID} .kh-sub {
@@ -164,6 +198,24 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        #${PILL_ID} .kh-cap {
+            display: inline-flex;
+            align-items: center;
+            width: fit-content;
+            max-width: 100%;
+            height: 18px;
+            padding: 0 7px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 184, 77, 0.14);
+            background: rgba(255, 159, 28, 0.08);
+            color: rgba(255, 245, 224, 0.72);
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            white-space: nowrap;
         }
 
         #${PILL_ID} .kh-close {
@@ -205,17 +257,19 @@
         }
 
         #${PILL_ID} .kh-quality-select {
-            width: 88px;
-            min-width: 88px;
-            max-width: 104px;
+            width: 96px;
+            min-width: 96px;
+            max-width: 116px;
             border: 1px solid rgba(255, 184, 77, 0.22);
-            border-radius: 999px;
-            background: rgba(10, 12, 16, 0.72);
+            border-radius: 13px;
+            background:
+                linear-gradient(180deg, rgba(255,255,255,0.035), transparent),
+                rgba(10, 12, 16, 0.74);
             color: #fff;
             font-size: 11px;
             font-weight: 700;
-            height: 34px;
-            padding: 0 10px;
+            height: 36px;
+            padding: 0 12px;
             outline: none;
             cursor: pointer;
             box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
@@ -227,12 +281,6 @@
             box-shadow: 0 0 0 3px rgba(255, 184, 77, 0.14);
         }
 
-        #${PILL_ID}:hover .kh-quality-select,
-        #${PILL_ID}:focus-within .kh-quality-select {
-            width: 104px;
-            min-width: 104px;
-        }
-
         #${PILL_ID}.kh-dismissing {
             animation: khukri-out 0.22s cubic-bezier(0.4, 0, 1, 1) both !important;
             pointer-events: none;
@@ -242,26 +290,20 @@
             #${PILL_ID} {
                 top: 12px;
                 right: 12px;
-                min-width: 280px;
-                max-width: min(332px, calc(100vw - 24px));
+                min-width: 292px;
+                max-width: min(352px, calc(100vw - 24px));
             }
 
             #${PILL_ID} .kh-main {
-                grid-template-columns: 44px minmax(0, 1fr) max-content 32px;
-                min-height: 52px;
+                grid-template-columns: 46px minmax(0, 1fr) max-content 32px;
+                min-height: 56px;
             }
 
             #${PILL_ID} .kh-quality-select {
-                width: 82px;
-                min-width: 82px;
+                width: 86px;
+                min-width: 86px;
                 height: 32px;
                 font-size: 11px;
-            }
-
-            #${PILL_ID}:hover .kh-quality-select,
-            #${PILL_ID}:focus-within .kh-quality-select {
-                width: 92px;
-                min-width: 92px;
             }
         }
     `;
@@ -401,6 +443,60 @@
         return QUALITY_OPTIONS.some((option) => option.value === saved) ? saved : QUALITY_DEFAULT;
     }
 
+    function pagePlayerResponseMaxHeight() {
+        const scripts = Array.from(document.scripts || []);
+        let maxHeight = 0;
+        for (const script of scripts) {
+            const text = script.textContent || '';
+            if (!text.includes('adaptiveFormats') && !text.includes('streamingData')) continue;
+            const matches = text.matchAll(/"height"\s*:\s*(\d{3,4})/g);
+            for (const match of matches) {
+                maxHeight = Math.max(maxHeight, Number(match[1]) || 0);
+            }
+        }
+        return maxHeight;
+    }
+
+    function currentVideoHeight() {
+        const heights = Array.from(document.querySelectorAll('video'))
+            .map((video) => Number(video.videoHeight || 0))
+            .filter((height) => height > 0);
+        return heights.length > 0 ? Math.max(...heights) : 0;
+    }
+
+    function detectedMaxHeight() {
+        return Math.max(pagePlayerResponseMaxHeight(), currentVideoHeight());
+    }
+
+    function availableQualityOptions(maxHeight) {
+        return QUALITY_OPTIONS.filter((option) => {
+            const cap = QUALITY_HEIGHTS[option.value];
+            return !cap || (maxHeight > 0 && cap <= maxHeight);
+        });
+    }
+
+    function normalizeQualityForHeight(quality, maxHeight) {
+        const available = availableQualityOptions(maxHeight);
+        return available.some((option) => option.value === quality) ? quality : QUALITY_DEFAULT;
+    }
+
+    function maxHeightLabel(maxHeight) {
+        return maxHeight ? `Up to ${maxHeight}p` : 'Detecting quality';
+    }
+
+    function renderQualityOptions(select, maxHeight, preferredQuality = select.value || QUALITY_DEFAULT) {
+        const previous = normalizeQualityForHeight(preferredQuality, maxHeight);
+        select.textContent = '';
+        for (const option of availableQualityOptions(maxHeight)) {
+            const node = document.createElement('option');
+            node.value = option.value;
+            node.textContent = option.label;
+            select.appendChild(node);
+        }
+        select.value = previous;
+        return previous;
+    }
+
     function saveQuality(origin, quality) {
         safeStorageGet([QUALITY_STORAGE_KEY], (result) => {
             const prefs = result && typeof result[QUALITY_STORAGE_KEY] === 'object'
@@ -414,6 +510,13 @@
     function subtitleForQuality(quality) {
         const match = QUALITY_OPTIONS.find((option) => option.value === quality);
         return match ? match.subtitle : 'BEST AVAILABLE';
+    }
+
+    function subtitleText(quality, maxHeight) {
+        if (quality === QUALITY_DEFAULT && maxHeight) {
+            return `BEST AVAILABLE • ${maxHeight}P MAX`;
+        }
+        return subtitleForQuality(quality);
     }
 
     function dismiss(pill, origin) {
@@ -468,7 +571,8 @@
             pill.setAttribute('role', 'button');
             pill.setAttribute('tabindex', '0');
             pill.setAttribute('aria-label', 'Download this video with Khukri');
-            const selectedQuality = qualityForOrigin(result, origin);
+            let maxHeight = detectedMaxHeight();
+            const selectedQuality = normalizeQualityForHeight(qualityForOrigin(result, origin), maxHeight);
             let activeQuality = selectedQuality;
 
             const main = document.createElement('div');
@@ -494,10 +598,14 @@
             title.appendChild(brand);
             const sub = document.createElement('div');
             sub.className = 'kh-sub';
-            sub.textContent = subtitleForQuality(activeQuality);
+            sub.textContent = subtitleText(activeQuality, maxHeight);
+            const cap = document.createElement('div');
+            cap.className = 'kh-cap';
+            cap.textContent = maxHeightLabel(maxHeight);
             content.appendChild(kicker);
             content.appendChild(title);
             content.appendChild(sub);
+            content.appendChild(cap);
 
             const closeBtn = document.createElement('button');
             closeBtn.className = 'kh-close';
@@ -515,13 +623,7 @@
             const qualitySelect = document.createElement('select');
             qualitySelect.className = 'kh-quality-select';
             qualitySelect.setAttribute('aria-label', 'Preferred video quality');
-            for (const option of QUALITY_OPTIONS) {
-                const node = document.createElement('option');
-                node.value = option.value;
-                node.textContent = option.label;
-                qualitySelect.appendChild(node);
-            }
-            qualitySelect.value = activeQuality;
+            activeQuality = renderQualityOptions(qualitySelect, maxHeight, activeQuality);
             qualityWrap.appendChild(qualityLabel);
             qualityWrap.appendChild(qualitySelect);
 
@@ -540,8 +642,22 @@
 
             qualitySelect.addEventListener('change', (event) => {
                 activeQuality = event.target.value || QUALITY_DEFAULT;
-                sub.textContent = subtitleForQuality(activeQuality);
+                sub.textContent = subtitleText(activeQuality, maxHeight);
                 saveQuality(origin, activeQuality);
+            });
+
+            const refreshDetectedQuality = () => {
+                const nextMaxHeight = detectedMaxHeight();
+                if (nextMaxHeight === maxHeight) return;
+                maxHeight = nextMaxHeight;
+                activeQuality = renderQualityOptions(qualitySelect, maxHeight, activeQuality);
+                cap.textContent = maxHeightLabel(maxHeight);
+                sub.textContent = subtitleText(activeQuality, maxHeight);
+            };
+            window.setTimeout(refreshDetectedQuality, 1200);
+            document.querySelectorAll('video').forEach((video) => {
+                video.addEventListener('loadedmetadata', refreshDetectedQuality, { once: true });
+                video.addEventListener('resize', refreshDetectedQuality);
             });
 
             pill.addEventListener('click', (event) => {
@@ -555,6 +671,7 @@
             });
 
             pill.addEventListener('keydown', (event) => {
+                if (event.target.closest('.kh-quality-wrap')) return;
                 if (event.key === 'Enter' || event.key === ' ') {
                     event.preventDefault();
                     pill.click();
