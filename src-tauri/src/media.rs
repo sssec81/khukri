@@ -38,9 +38,11 @@ impl MediaQuality {
 
     pub fn format_selector(self) -> &'static str {
         match self {
-            Self::Best => "best/bestvideo+bestaudio",
-            Self::P1080 => "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
-            Self::P720 => "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+            Self::Best => "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            Self::P1080 => {
+                "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][acodec!=none]/best"
+            }
+            Self::P720 => "bestvideo[vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][acodec!=none]/best",
             Self::AudioOnly => "bestaudio/best",
         }
     }
@@ -233,10 +235,13 @@ pub fn prepare_sidecar_for_execution(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let prepared = PREPARED_SIDECARS.get_or_init(|| StdMutex::new(std::collections::HashSet::new()));
+        let prepared =
+            PREPARED_SIDECARS.get_or_init(|| StdMutex::new(std::collections::HashSet::new()));
 
         {
-            let guard = prepared.lock().map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
+            let guard = prepared
+                .lock()
+                .map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
             if guard.contains(&canonical) {
                 return Ok(());
             }
@@ -247,7 +252,9 @@ pub fn prepare_sidecar_for_execution(path: &Path) -> Result<(), String> {
             ad_hoc_codesign(&canonical)?;
         }
 
-        let mut guard = prepared.lock().map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
+        let mut guard = prepared
+            .lock()
+            .map_err(|_| "failed to lock prepared-sidecar cache".to_string())?;
         guard.insert(canonical);
     }
 
@@ -260,7 +267,8 @@ pub fn prepare_sidecar_for_execution(path: &Path) -> Result<(), String> {
 }
 
 fn file_starts_with_shebang(path: &Path) -> Result<bool, String> {
-    let mut file = fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
     let mut buf = [0u8; 2];
     let read = file
         .read(&mut buf)
@@ -269,7 +277,8 @@ fn file_starts_with_shebang(path: &Path) -> Result<bool, String> {
 }
 
 fn is_macho_binary(path: &Path) -> Result<bool, String> {
-    let mut file = fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
     let mut buf = [0u8; 4];
     let read = file
         .read(&mut buf)
@@ -472,7 +481,20 @@ async fn run_media_download(
         return Err(reason);
     }
 
-    let final_path = final_path.unwrap_or_else(|| job.output_path.clone());
+    let final_path = final_path.unwrap_or_else(|| expected_output_path(&job.output_path));
+    if !final_path.is_file() {
+        set_progress(&tx, |progress| {
+            progress.status = DownloadStatus::Failed;
+            progress.speed_bps = 0;
+            progress.eta_seconds = None;
+        });
+        let reason = format!(
+            "yt-dlp finished but final merged file was not found: {}",
+            final_path.display()
+        );
+        state.lock().await.failure_reason = Some(reason.clone());
+        return Err(reason);
+    }
     tracing::info!(binary = %binary.display(), final_path = %final_path.display(), "yt-dlp media download completed");
     state.lock().await.final_path = Some(final_path.clone());
     set_progress(&tx, |progress| {
@@ -489,6 +511,7 @@ async fn run_media_download(
 fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "--no-config".to_string(),
+        "--no-playlist".to_string(),
         "--newline".to_string(),
         "--progress".to_string(),
         "--progress-template".to_string(),
@@ -497,6 +520,10 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
         ),
         "--print".to_string(),
         format!("after_move:{FINAL_PATH_PREFIX}%(filepath)j"),
+        "--paths".to_string(),
+        format!("home:{}", output_dir(&job.output_path).display()),
+        "--paths".to_string(),
+        format!("temp:{}", media_temp_dir(&job.id).display()),
         "-o".to_string(),
         output_template(&job.output_path),
         "-f".to_string(),
@@ -504,10 +531,8 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
     ];
 
     if let Some(ffmpeg_binary) = ffmpeg_binary {
-        if let Some(ffmpeg_dir) = ffmpeg_binary.parent() {
-            args.push("--ffmpeg-location".to_string());
-            args.push(ffmpeg_dir.display().to_string());
-        }
+        args.push("--ffmpeg-location".to_string());
+        args.push(ffmpeg_binary.display().to_string());
         if !matches!(job.quality, MediaQuality::AudioOnly) {
             args.push("--merge-output-format".to_string());
             args.push("mp4".to_string());
@@ -530,17 +555,36 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
 }
 
 fn output_template(output_path: &Path) -> String {
-    let parent = output_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
     let stem = output_path
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("download");
 
-    parent.join(format!("{stem}.%(ext)s")).display().to_string()
+    format!("{stem}.%(ext)s")
+}
+
+fn output_dir(output_path: &Path) -> PathBuf {
+    output_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn expected_output_path(output_path: &Path) -> PathBuf {
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("download");
+
+    output_dir(output_path).join(format!("{stem}.mp4"))
+}
+
+fn media_temp_dir(job_id: &str) -> PathBuf {
+    let path = app_data_dir().join("media-temp").join(job_id);
+    let _ = fs::create_dir_all(&path);
+    path
 }
 
 fn format_selector(quality: MediaQuality, ffmpeg_available: bool) -> &'static str {
@@ -742,10 +786,18 @@ mod tests {
             Some(binary_path.as_path()),
         );
 
-        let expected_dir = binary_path.parent().unwrap().display().to_string();
+        assert!(args.contains(&"--no-playlist".to_string()));
+        assert!(args.windows(2).any(|part| part[0] == "--paths"
+            && part[1].starts_with("home:")
+            && part[1].contains("downloads")));
+        assert!(args.windows(2).any(|part| part[0] == "--paths"
+            && part[1].starts_with("temp:")
+            && part[1].contains("media-temp")));
+
         assert!(args
             .windows(2)
-            .any(|part| part[0] == "--ffmpeg-location" && part[1] == expected_dir));
+            .any(|part| part[0] == "--ffmpeg-location"
+                && part[1] == binary_path.display().to_string()));
 
         let _ = std::fs::remove_file(&binary_path);
         let _ = std::fs::remove_dir(&temp_dir);

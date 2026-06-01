@@ -6,10 +6,12 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::time::{timeout, Duration};
 
 const PROGRESS_PREFIX: &str = "__KHUKRI_PROGRESS__:";
 const FINAL_PATH_PREFIX: &str = "__KHUKRI_FINAL_PATH__:";
+const YTDLP_TIMEOUT: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaQuality {
@@ -31,9 +33,11 @@ impl MediaQuality {
 
     pub fn format_selector(self) -> &'static str {
         match self {
-            Self::Best => "best/bestvideo+bestaudio",
-            Self::P1080 => "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best",
-            Self::P720 => "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+            Self::Best => "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            Self::P1080 => {
+                "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][acodec!=none]/best"
+            }
+            Self::P720 => "bestvideo[vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720][acodec!=none]/best",
             Self::AudioOnly => "bestaudio/best",
         }
     }
@@ -67,6 +71,7 @@ struct RawProgress {
     status: String,
     downloaded_bytes: Option<String>,
     total_bytes: Option<String>,
+    total_bytes_estimate: Option<String>,
     speed: Option<String>,
     eta: Option<String>,
 }
@@ -83,14 +88,19 @@ pub fn build_arguments(job: &YtDlpJob) -> Vec<String> {
 fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "--no-config".to_string(),
+        "--no-playlist".to_string(),
         "--newline".to_string(),
         "--progress".to_string(),
         "--progress-template".to_string(),
         format!(
-            "download:{PROGRESS_PREFIX}{{\"status\":\"%(progress.status)s\",\"downloaded_bytes\":\"%(progress.downloaded_bytes)s\",\"total_bytes\":\"%(progress.total_bytes)s\",\"speed\":\"%(progress.speed)s\",\"eta\":\"%(progress.eta)s\"}}"
+            "download:{PROGRESS_PREFIX}{{\"status\":\"%(progress.status)s\",\"downloaded_bytes\":\"%(progress.downloaded_bytes)s\",\"total_bytes\":\"%(progress.total_bytes)s\",\"total_bytes_estimate\":\"%(progress.total_bytes_estimate)s\",\"speed\":\"%(progress.speed)s\",\"eta\":\"%(progress.eta)s\"}}"
         ),
         "--print".to_string(),
         format!("after_move:{FINAL_PATH_PREFIX}%(filepath)j"),
+        "--paths".to_string(),
+        format!("home:{}", output_dir(&job.output_path).display()),
+        "--paths".to_string(),
+        format!("temp:{}", media_temp_dir(&job.id).display()),
         "-o".to_string(),
         output_template(&job.output_path),
         "-f".to_string(),
@@ -98,10 +108,8 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
     ];
 
     if let Some(ffmpeg_binary) = ffmpeg_binary {
-        if let Some(ffmpeg_dir) = ffmpeg_binary.parent() {
-            args.push("--ffmpeg-location".to_string());
-            args.push(ffmpeg_dir.display().to_string());
-        }
+        args.push("--ffmpeg-location".to_string());
+        args.push(ffmpeg_binary.display().to_string());
         if !matches!(job.quality, MediaQuality::AudioOnly) {
             args.push("--merge-output-format".to_string());
             args.push("mp4".to_string());
@@ -129,7 +137,8 @@ pub fn parse_progress_line(line: &str) -> Option<YtDlpProgress> {
     Some(YtDlpProgress {
         phase: raw.status,
         bytes_done: parse_u64_like(raw.downloaded_bytes).unwrap_or(0),
-        total_bytes: parse_u64_like(raw.total_bytes),
+        total_bytes: parse_u64_like(raw.total_bytes)
+            .or_else(|| parse_u64_like(raw.total_bytes_estimate)),
         speed_bps: parse_u64_like(raw.speed).unwrap_or(0),
         eta_seconds: parse_u64_like(raw.eta),
     })
@@ -235,7 +244,20 @@ fn build_ytdlp_command(path: &Path) -> Result<Command> {
     Ok(Command::new(path))
 }
 
+#[allow(dead_code)]
 pub async fn run_ytdlp<F>(job: YtDlpJob, mut on_progress: F) -> Result<YtDlpOutcome>
+where
+    F: FnMut(YtDlpProgress) + Send,
+{
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    run_ytdlp_with_cancel(job, &mut on_progress, cancel_rx).await
+}
+
+pub async fn run_ytdlp_with_cancel<F>(
+    job: YtDlpJob,
+    on_progress: &mut F,
+    mut cancel_rx: watch::Receiver<bool>,
+) -> Result<YtDlpOutcome>
 where
     F: FnMut(YtDlpProgress) + Send,
 {
@@ -258,19 +280,52 @@ where
 
     let mut final_path = None::<PathBuf>;
     let mut last_detail = None::<String>;
-    while let Some(line) = line_rx.recv().await {
-        if let Some(progress) = parse_progress_line(&line) {
-            on_progress(progress);
-            continue;
-        }
+    let drain = async {
+        loop {
+            tokio::select! {
+                changed = cancel_rx.changed() => {
+                    if changed.is_ok() && *cancel_rx.borrow() {
+                        return Err(anyhow::anyhow!("yt-dlp job cancelled by Khukri"));
+                    }
+                    if changed.is_err() {
+                        return Err(anyhow::anyhow!("yt-dlp cancellation channel closed"));
+                    }
+                }
+                line = line_rx.recv() => {
+                    let Some(line) = line else {
+                        return Ok(());
+                    };
 
-        if let Some(path) = parse_final_path_line(&line) {
-            final_path = Some(path);
-            continue;
-        }
+                    if let Some(progress) = parse_progress_line(&line) {
+                        on_progress(progress);
+                        continue;
+                    }
 
-        if let Some(detail) = parse_detail_line(&line) {
-            last_detail = Some(detail);
+                    if let Some(path) = parse_final_path_line(&line) {
+                        final_path = Some(path);
+                        continue;
+                    }
+
+                    if let Some(detail) = parse_detail_line(&line) {
+                        last_detail = Some(detail);
+                    }
+                }
+            }
+        }
+    };
+
+    match timeout(YTDLP_TIMEOUT, drain).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            return Err(error);
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            bail!(
+                "yt-dlp job timed out after {} seconds",
+                YTDLP_TIMEOUT.as_secs()
+            );
         }
     }
 
@@ -284,25 +339,48 @@ where
         bail!("{}", reason);
     }
 
-    let final_path = final_path.unwrap_or_else(|| job.output_path.clone());
+    let final_path = final_path.unwrap_or_else(|| expected_output_path(&job.output_path));
+    if !final_path.is_file() {
+        bail!(
+            "yt-dlp finished but final merged file was not found: {}",
+            final_path.display()
+        );
+    }
     tracing::info!(binary = %binary.display(), final_path = %final_path.display(), "bridge yt-dlp job completed");
-    Ok(YtDlpOutcome {
-        final_path,
-    })
+    Ok(YtDlpOutcome { final_path })
 }
 
 fn output_template(output_path: &Path) -> String {
-    let parent = output_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
     let stem = output_path
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("download");
 
-    parent.join(format!("{stem}.%(ext)s")).display().to_string()
+    format!("{stem}.%(ext)s")
+}
+
+fn output_dir(output_path: &Path) -> PathBuf {
+    output_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn expected_output_path(output_path: &Path) -> PathBuf {
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("download");
+
+    output_dir(output_path).join(format!("{stem}.mp4"))
+}
+
+fn media_temp_dir(job_id: &str) -> PathBuf {
+    let path = app_data_dir().join("media-temp").join(job_id);
+    let _ = fs::create_dir_all(&path);
+    path
 }
 
 fn format_selector(quality: MediaQuality, ffmpeg_available: bool) -> &'static str {
@@ -348,8 +426,8 @@ fn parse_detail_line(line: &str) -> Option<String> {
 }
 
 fn file_starts_with_shebang(path: &Path) -> Result<bool> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut buf = [0u8; 2];
     let read = file
         .read(&mut buf)
@@ -514,6 +592,13 @@ mod tests {
     #[test]
     fn quality_specific_arguments_are_built() {
         let audio_args = build_arguments(&sample_job(MediaQuality::AudioOnly));
+        assert!(audio_args.contains(&"--no-playlist".to_string()));
+        assert!(audio_args.windows(2).any(|part| part[0] == "--paths"
+            && part[1].starts_with("home:")
+            && part[1].contains("downloads")));
+        assert!(audio_args.windows(2).any(|part| part[0] == "--paths"
+            && part[1].starts_with("temp:")
+            && part[1].contains("media-temp")));
         assert!(audio_args
             .windows(2)
             .any(|part| part == ["-x", "--audio-format"]));
@@ -523,8 +608,12 @@ mod tests {
             &sample_job(MediaQuality::P1080),
             Some(Path::new("/tmp/ffmpeg")),
         );
+        assert!(hd_args.contains(
+            &"bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080][acodec!=none]/best".to_string()
+        ));
         assert!(hd_args
-            .contains(&"best[height<=1080]/bestvideo[height<=1080]+bestaudio/best".to_string()));
+            .windows(2)
+            .any(|part| part == ["--ffmpeg-location", "/tmp/ffmpeg"]));
     }
 
     #[test]
@@ -539,6 +628,16 @@ mod tests {
         assert_eq!(progress.total_bytes, Some(2_097_152));
         assert_eq!(progress.speed_bps, 524_288);
         assert_eq!(progress.eta_seconds, Some(2));
+    }
+
+    #[test]
+    fn progress_json_uses_total_bytes_estimate_fallback() {
+        let progress = parse_progress_line(
+            "__KHUKRI_PROGRESS__:{\"status\":\"downloading\",\"downloaded_bytes\":\"1048576\",\"total_bytes\":\"NA\",\"total_bytes_estimate\":\"2097152\",\"speed\":\"524288\",\"eta\":\"2\"}",
+        )
+        .expect("progress should parse");
+
+        assert_eq!(progress.total_bytes, Some(2_097_152));
     }
 
     #[test]

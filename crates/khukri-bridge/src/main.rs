@@ -12,9 +12,11 @@ use khukri_engine::{db, spawn_download, DownloadConfig, DownloadProgress, Downlo
 use media::{should_use_ytdlp, MediaQuality, YtDlpJob};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
+use tokio::time::{sleep, Duration};
 
 const HOST_ID: &str = "com.khukri.host";
+const BRIDGE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -668,16 +670,37 @@ async fn main() -> Result<()> {
                     });
 
                     tokio::spawn(async move {
-                        match media::run_ytdlp(job.clone(), |progress| {
+                        let (cancel_tx, cancel_rx) = watch::channel(false);
+                        let cancel_pool = pool_for_media.clone();
+                        let cancel_id = job.id.clone();
+                        let cancel_task = tokio::spawn(async move {
+                            loop {
+                                sleep(BRIDGE_CANCEL_POLL_INTERVAL).await;
+                                match db::get_download(&cancel_pool, &cancel_id).await {
+                                    Ok(Some(row)) if row.status == "active" => {}
+                                    _ => {
+                                        let _ = cancel_tx.send(true);
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                        let mut on_progress = |progress| {
                             let _ = tx.send(media_progress_event(
                                 &job.id,
                                 &progress,
                                 source_clone.clone(),
                                 Some(path_display.clone()),
                             ));
-                        })
-                        .await
-                        {
+                        };
+
+                        let result =
+                            media::run_ytdlp_with_cancel(job.clone(), &mut on_progress, cancel_rx)
+                                .await;
+                        cancel_task.abort();
+
+                        match result {
                             Ok(outcome) => {
                                 let _ = db::set_download_file_path(
                                     &pool_for_media,
@@ -692,7 +715,9 @@ async fn main() -> Result<()> {
                                     source_clone.as_deref(),
                                 )
                                 .await;
-                                let _ = db::set_download_status(&pool_for_media, &job.id, "complete").await;
+                                let _ =
+                                    db::set_download_status(&pool_for_media, &job.id, "complete")
+                                        .await;
                                 let _ = tx.send(BridgeEvent {
                                     kind: "progress",
                                     id: job.id.clone(),
@@ -709,6 +734,34 @@ async fn main() -> Result<()> {
                                 });
                             }
                             Err(err) => {
+                                let current_status = db::get_download(&pool_for_media, &job.id)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .map(|row| row.status);
+                                let preserved_status = match current_status.as_deref() {
+                                    Some("paused") => Some("paused"),
+                                    Some("cancelled") | None => Some("cancelled"),
+                                    Some("complete") => Some("complete"),
+                                    _ => None,
+                                };
+                                if let Some(status) = preserved_status {
+                                    let _ = tx.send(BridgeEvent {
+                                        kind: "progress",
+                                        id: job.id.clone(),
+                                        status,
+                                        bytes_done: 0,
+                                        total_bytes: None,
+                                        speed_bps: 0,
+                                        eta_seconds: None,
+                                        segments_done: 0,
+                                        segments_total: None,
+                                        source: source.clone(),
+                                        output_path: Some(path_display.clone()),
+                                        message: Some(err.to_string()),
+                                    });
+                                    return;
+                                }
                                 let _ = db::set_download_request_metadata(
                                     &pool_for_media,
                                     &job.id,
@@ -716,7 +769,12 @@ async fn main() -> Result<()> {
                                     source_clone.as_deref(),
                                 )
                                 .await;
-                                let _ = db::set_download_failed(&pool_for_media, &job.id, &err.to_string()).await;
+                                let _ = db::set_download_failed(
+                                    &pool_for_media,
+                                    &job.id,
+                                    &err.to_string(),
+                                )
+                                .await;
                                 let _ = tx.send(BridgeEvent {
                                     kind: "error",
                                     id: job.id.clone(),

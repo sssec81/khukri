@@ -699,13 +699,9 @@ async fn start_or_queue_download(
 
     if !is_scheduler_window_open(&settings_snapshot) || active_guard.len() >= max_concurrent {
         drop(active_guard);
-        let snapshot = persist_queued_download(
-            &pool,
-            &request,
-            &settings_snapshot,
-            existing_id.as_deref(),
-        )
-        .await?;
+        let snapshot =
+            persist_queued_download(&pool, &request, &settings_snapshot, existing_id.as_deref())
+                .await?;
         emit_queue_updated(&app, &pool).await?;
         return Ok(snapshot);
     }

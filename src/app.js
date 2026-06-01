@@ -1009,11 +1009,13 @@ async function main() {
     if (event.key === "Delete") {
       event.preventDefault();
       const item = mergeQueueWithProgress(currentQueue).find((entry) => entry.id === row.dataset.rowId);
-      if (!item || !["active", "queued", "paused"].includes(item.liveStatus ?? item.status)) {
+      if (!item) {
         return;
       }
+      const liveStatus = item.liveStatus ?? item.status;
+      const action = ["active", "queued", "paused"].includes(liveStatus) ? "cancel" : "remove";
       statusNode.textContent = strings["status.loading"];
-      void handleRowAction("cancel", row.dataset.rowId).catch((error) => {
+      void handleRowAction(action, row.dataset.rowId).catch((error) => {
         statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
       });
       return;
@@ -1057,7 +1059,9 @@ async function main() {
         const liveIds = new Set(currentQueue.map((item) => item.id));
         currentQueue.forEach((item) => {
           const progress = progressById.get(item.id);
-          const keepLiveProgress = item.status === "paused" && Boolean(progress);
+          const keepLiveProgress = item.status === "paused"
+            && Boolean(progress)
+            && progress.status === "paused";
           if (!keepLiveProgress && ["paused", "failed", "complete", "cancelled"].includes(item.status)) {
             progressById.delete(item.id);
           }
