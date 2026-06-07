@@ -71,6 +71,7 @@ struct RawProgress {
     status: String,
     downloaded_bytes: Option<String>,
     total_bytes: Option<String>,
+    total_bytes_estimate: Option<String>,
     speed: Option<String>,
     eta: Option<String>,
 }
@@ -516,7 +517,7 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
         "--progress".to_string(),
         "--progress-template".to_string(),
         format!(
-            "download:{PROGRESS_PREFIX}{{\"status\":\"%(progress.status)s\",\"downloaded_bytes\":\"%(progress.downloaded_bytes)s\",\"total_bytes\":\"%(progress.total_bytes)s\",\"speed\":\"%(progress.speed)s\",\"eta\":\"%(progress.eta)s\"}}"
+            "download:{PROGRESS_PREFIX}{{\"status\":\"%(progress.status)s\",\"downloaded_bytes\":\"%(progress.downloaded_bytes)s\",\"total_bytes\":\"%(progress.total_bytes)s\",\"total_bytes_estimate\":\"%(progress.total_bytes_estimate)s\",\"speed\":\"%(progress.speed)s\",\"eta\":\"%(progress.eta)s\"}}"
         ),
         "--print".to_string(),
         format!("after_move:{FINAL_PATH_PREFIX}%(filepath)j"),
@@ -610,7 +611,7 @@ fn parse_progress_line(line: &str) -> Option<ParsedProgress> {
     Some(ParsedProgress {
         phase: raw.status,
         bytes_done: parse_u64_like(raw.downloaded_bytes).unwrap_or(0),
-        total_bytes: parse_u64_like(raw.total_bytes),
+        total_bytes: parse_u64_like(raw.total_bytes).or_else(|| parse_u64_like(raw.total_bytes_estimate)),
         speed_bps: parse_u64_like(raw.speed).unwrap_or(0),
         eta_seconds: parse_u64_like(raw.eta),
     })

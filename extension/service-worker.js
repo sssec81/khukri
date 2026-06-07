@@ -17,7 +17,6 @@ const INTERCEPT_MODE_AUTO = 'auto';
 const PROMPT_STORAGE_PREFIX = 'khukri_prompt_';
 const BYPASS_TTL_MS = 10000;
 const browserBypassUntil = new Map();
-let startupCleanupPromise = null;
 
 // FIX 6 — retry queue key in chrome.storage.session
 const RETRY_QUEUE_KEY = 'khukri_retry_queue';
@@ -259,43 +258,6 @@ function storageSessionRemove(key) {
     return chrome.storage.session.remove(key);
 }
 
-async function clearPromptPayloads() {
-    try {
-        const values = await chrome.storage.session.get(null);
-        const keys = Object.keys(values || {}).filter((key) => key.startsWith(PROMPT_STORAGE_PREFIX));
-        if (keys.length > 0) {
-            await chrome.storage.session.remove(keys);
-        }
-    } catch (error) {
-        console.warn('Khukri: Failed to clear stale prompt payloads:', error);
-    }
-}
-
-async function closePromptWindows() {
-    try {
-        const promptPattern = chrome.runtime.getURL('prompt.html') + '*';
-        const tabs = await chrome.tabs.query({ url: promptPattern });
-        const tabIds = tabs.map((tab) => tab.id).filter((id) => typeof id === 'number');
-        if (tabIds.length > 0) {
-            await chrome.tabs.remove(tabIds);
-        }
-    } catch (error) {
-        console.warn('Khukri: Failed to close stale prompt windows:', error);
-    }
-}
-
-function cleanupStartupPrompts() {
-    if (!startupCleanupPromise) {
-        startupCleanupPromise = Promise.all([
-            clearPromptPayloads(),
-            closePromptWindows()
-        ]).catch((error) => {
-            console.warn('Khukri: Startup prompt cleanup failed:', error);
-        });
-    }
-    return startupCleanupPromise;
-}
-
 function loadInterceptMode() {
     return new Promise((resolve) => {
         chrome.storage.local.get([INTERCEPT_MODE_KEY], (result) => {
@@ -436,8 +398,6 @@ async function restartInBrowser(payload) {
 }
 
 async function openPromptForPayload(payload) {
-    await cleanupStartupPrompts();
-
     const token = crypto.randomUUID();
     const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
     const promptPayload = {
@@ -448,6 +408,33 @@ async function openPromptForPayload(payload) {
     };
 
     await storageSessionSet({ [storageKey]: promptPayload });
+
+    // Try to display the prompt directly in the active tab (DOM overlay)
+    // to completely avoid browser popup blockers and tab-forcing behavior.
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const activeTab = tabs[0];
+        if (activeTab && activeTab.id && activeTab.url && !activeTab.url.startsWith('chrome://')) {
+            const injected = await new Promise((resolve) => {
+                chrome.tabs.sendMessage(
+                    activeTab.id,
+                    { type: 'khukri_prompt_download', payload: promptPayload },
+                    (response) => {
+                        if (chrome.runtime.lastError || !response) {
+                            resolve(false);
+                        } else {
+                            resolve(true);
+                        }
+                    }
+                );
+            });
+            if (injected) {
+                return true;
+            }
+        }
+    } catch (e) {
+        console.warn('Khukri: Failed to send DOM prompt to active tab', e);
+    }
 
     const promptUrl = chrome.runtime.getURL(`prompt.html?token=${encodeURIComponent(token)}`);
     const screenW = self.screen?.width ?? 1280;
@@ -462,7 +449,6 @@ async function openPromptForPayload(payload) {
             {
                 url: promptUrl,
                 type: 'popup',
-                state: 'normal',
                 width: popupW,
                 height: popupH,
                 left,
@@ -593,6 +579,9 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
 
     // FIX 1 — SYNCHRONOUS cancel before any async work
     chrome.downloads.cancel(downloadItem.id, () => void chrome.runtime.lastError);
+
+    // FIX 6 — drain any queued retries from a previous bridge-unavailable state
+    void drainRetryQueue();
 
     void loadInterceptMode().then((mode) => {
         if (mode === INTERCEPT_MODE_ASK) {
@@ -800,20 +789,23 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.runtime.onInstalled.addListener(async () => {
     await pruneDismissedSites();
     await syncWebRequestListener();
-    await cleanupStartupPrompts();
+    // FIX 6 — drain any retries that survived from before the install/update
+    await drainRetryQueue();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
     await pruneDismissedSites();
     await syncWebRequestListener();
-    await cleanupStartupPrompts();
+    // FIX 6 — drain retries on browser startup (bridge may be available now)
+    await drainRetryQueue();
 });
 
 (async () => {
     try {
         await pruneDismissedSites();
         await syncWebRequestListener();
-        await cleanupStartupPrompts();
+        // FIX 6 — drain retries on SW boot (covers extension reload during dev)
+        await drainRetryQueue();
     } catch (error) {
         console.error('Khukri: boot-time listener sync failed:', error);
     }

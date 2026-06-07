@@ -20,7 +20,7 @@
     const ICON_DOWNLOAD = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M12 4v12m0 0l-4.5-4.5M12 16l4.5-4.5M5 19h14"
-                stroke="#FF9F1C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                stroke="#10b981" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>`;
 
     const ICON_CLOSE = `
@@ -45,33 +45,28 @@
 
         #${PILL_ID} {
             position: absolute;
-            top: 18px;
-            right: 18px;
+            top: 24px;
+            right: 24px;
             z-index: 2147483647;
             display: flex;
             align-items: center;
             cursor: pointer;
-            min-width: 328px;
-            max-width: 390px;
-            border-radius: 20px;
-            overflow: hidden;
-            background:
-                radial-gradient(circle at 9% 10%, rgba(255, 183, 72, 0.22), transparent 34%),
-                radial-gradient(circle at 95% 92%, rgba(72, 160, 80, 0.18), transparent 36%),
-                linear-gradient(150deg, rgba(38, 50, 31, 0.96), rgba(10, 13, 17, 0.98) 60%);
-            border: 1px solid rgba(255, 166, 43, 0.48);
+            width: max-content;
+            max-width: calc(100vw - 48px);
+            border-radius: 999px;
+            background: rgba(18, 18, 18, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             box-shadow:
-                0 24px 58px rgba(0, 0, 0, 0.46),
-                0 0 0 1px rgba(255, 184, 77, 0.12) inset,
-                0 0 36px rgba(255, 159, 28, 0.08);
-            font-family: "Segoe UI Variable Display", "Aptos", -apple-system, 'SF Pro Display',
-                         BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+                0 16px 32px rgba(0, 0, 0, 0.4),
+                inset 0 1px 1px rgba(255, 255, 255, 0.1),
+                0 0 40px rgba(16, 185, 129, 0.12);
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
             user-select: none;
             outline: none;
-            backdrop-filter: blur(20px) saturate(1.24);
-            -webkit-backdrop-filter: blur(20px) saturate(1.24);
-            animation: khukri-in 0.32s cubic-bezier(0.34, 1.4, 0.64, 1) both;
-            transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, opacity 0.18s ease;
+            backdrop-filter: blur(24px) saturate(1.2);
+            -webkit-backdrop-filter: blur(24px) saturate(1.2);
+            animation: khukri-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, border-color 0.2s ease;
         }
 
         #${PILL_ID}::before {
@@ -79,42 +74,25 @@
             position: absolute;
             inset: 0;
             border-radius: inherit;
-            background:
-                linear-gradient(90deg, rgba(255, 159, 28, 0.18), transparent 26%),
-                linear-gradient(180deg, rgba(255,255,255,0.08), transparent 42%);
-            opacity: 0.55;
-            pointer-events: none;
-        }
-
-        #${PILL_ID}::after {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(
-                110deg,
-                transparent 20%,
-                rgba(255, 184, 77, 0.08) 50%,
-                transparent 80%
-            );
-            background-size: 300% 100%;
-            animation: khukri-shimmer 5.4s ease infinite;
+            background: linear-gradient(90deg, rgba(16, 185, 129, 0.2), transparent 40%);
+            opacity: 0.6;
             pointer-events: none;
         }
 
         #${PILL_ID}:hover {
-            transform: translateY(-3px);
-            border-color: rgba(255, 184, 77, 0.68);
+            transform: scale(1.02);
+            border-color: rgba(255, 255, 255, 0.15);
             box-shadow:
-                0 26px 56px rgba(0, 0, 0, 0.46),
-                0 0 0 1px rgba(255, 184, 77, 0.14) inset;
+                0 20px 40px rgba(0, 0, 0, 0.5),
+                inset 0 1px 1px rgba(255, 255, 255, 0.15),
+                0 0 50px rgba(16, 185, 129, 0.2);
         }
 
         #${PILL_ID} .kh-main {
-            display: grid;
-            grid-template-columns: 52px minmax(0, 1fr) max-content 34px;
+            display: flex;
             align-items: center;
-            min-height: 60px;
-            width: 100%;
+            padding: 6px 8px 6px 8px;
+            gap: 12px;
             position: relative;
             z-index: 1;
         }
@@ -123,162 +101,127 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            align-self: stretch;
-            background:
-                linear-gradient(180deg, rgba(255, 166, 43, 0.18), rgba(255, 166, 43, 0.08));
-            border-right: 1px solid rgba(255, 184, 77, 0.14);
-            position: relative;
-        }
-
-        #${PILL_ID} .kh-icon-zone::after {
-            content: '';
-            position: absolute;
-            right: -1px;
-            top: 16%;
-            width: 1px;
-            height: 68%;
-            background: linear-gradient(180deg, transparent, rgba(255, 184, 77, 0.5), transparent);
         }
 
         #${PILL_ID} .kh-icon-circle {
-            width: 32px;
-            height: 32px;
+            width: 34px;
+            height: 34px;
             border-radius: 50%;
-            background:
-                linear-gradient(180deg, rgba(255, 176, 74, 0.18), rgba(255, 159, 28, 0.08));
-            border: 1px solid rgba(255, 184, 77, 0.34);
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.3), rgba(16, 185, 129, 0.1));
+            border: 1px solid rgba(16, 185, 129, 0.4);
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow:
-                0 8px 18px rgba(0, 0, 0, 0.24),
-                0 0 20px rgba(255, 159, 28, 0.14);
+            box-shadow: 0 0 16px rgba(16, 185, 129, 0.3);
+        }
+        
+        #${PILL_ID} .kh-icon-circle svg {
+            width: 14px;
+            height: 14px;
         }
 
         #${PILL_ID} .kh-content {
             display: flex;
             flex-direction: column;
             justify-content: center;
-            padding: 9px 6px 9px 12px;
-            gap: 3px;
             min-width: 0;
+            padding-right: 8px;
         }
 
         #${PILL_ID} .kh-kicker {
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.18em;
+            display: block;
+            font-size: 8px;
+            font-weight: 800;
+            letter-spacing: 0.15em;
             text-transform: uppercase;
-            color: rgba(255, 245, 224, 0.5);
-            white-space: nowrap;
+            color: rgba(52, 211, 153, 0.8);
+            margin-bottom: 2px;
+        }
+
+        #${PILL_ID} .kh-sub {
+            display: none;
         }
 
         #${PILL_ID} .kh-title {
-            font-size: 13.5px;
+            font-size: 14px;
             font-weight: 700;
             line-height: 1.1;
             color: #fff;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            letter-spacing: -0.02em;
+            letter-spacing: -0.01em;
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
 
         #${PILL_ID} .kh-brand {
-            color: #ffad32;
-            text-shadow: 0 0 18px rgba(255, 159, 28, 0.32);
-        }
-
-        #${PILL_ID} .kh-sub {
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.14em;
-            color: rgba(241, 247, 238, 0.64);
-            text-transform: uppercase;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            color: #34d399;
+            font-weight: 800;
+            text-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
         }
 
         #${PILL_ID} .kh-cap {
-            display: inline-flex;
-            align-items: center;
-            width: fit-content;
-            max-width: 100%;
-            height: 18px;
-            padding: 0 7px;
-            border-radius: 999px;
-            border: 1px solid rgba(255, 184, 77, 0.14);
-            background: rgba(255, 159, 28, 0.08);
-            color: rgba(255, 245, 224, 0.72);
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            white-space: nowrap;
+            display: none;
         }
 
         #${PILL_ID} .kh-close {
             display: flex;
             align-items: center;
             justify-content: center;
-            align-self: stretch;
-            background: none;
-            border: none;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             cursor: pointer;
-            color: rgba(255, 255, 255, 0.34);
-            transition: color 0.15s ease, background 0.15s ease;
+            color: rgba(255, 255, 255, 0.6);
+            transition: all 0.2s ease;
         }
 
         #${PILL_ID} .kh-close:hover {
-            color: rgba(255, 255, 255, 0.82);
-            background: rgba(255, 255, 255, 0.05);
+            color: #fff;
+            background: rgba(255, 255, 255, 0.15);
+            transform: scale(1.05);
+            border-color: rgba(255, 255, 255, 0.2);
         }
 
         #${PILL_ID} .kh-quality-wrap {
             display: flex;
             align-items: center;
-            gap: 0;
-            justify-content: flex-end;
-            padding: 0 6px 0 0;
-            min-width: 0;
-            width: 100%;
-            position: relative;
         }
 
         #${PILL_ID} .kh-quality-label {
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.14em;
-            color: rgba(255, 245, 224, 0.52);
-            text-transform: uppercase;
-            white-space: nowrap;
             display: none;
         }
 
         #${PILL_ID} .kh-quality-select {
-            width: 96px;
-            min-width: 96px;
-            max-width: 116px;
-            border: 1px solid rgba(255, 184, 77, 0.22);
-            border-radius: 13px;
-            background:
-                linear-gradient(180deg, rgba(255,255,255,0.035), transparent),
-                rgba(10, 12, 16, 0.74);
+            width: auto;
+            border: none;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.1);
             color: #fff;
             font-size: 11px;
-            font-weight: 700;
-            height: 36px;
+            font-weight: 600;
+            height: 28px;
             padding: 0 12px;
             outline: none;
             cursor: pointer;
-            box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-            transition: width 0.16s ease, min-width 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+            backdrop-filter: blur(8px);
+            transition: background 0.2s ease;
+            appearance: none;
+            -webkit-appearance: none;
+            padding-right: 24px;
+            background-image: url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L4 4L7 1' stroke='white' stroke-opacity='0.6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+        }
+
+        #${PILL_ID} .kh-quality-select:hover {
+            background: rgba(255, 255, 255, 0.15);
         }
 
         #${PILL_ID} .kh-quality-select:focus {
-            border-color: rgba(255, 184, 77, 0.7);
-            box-shadow: 0 0 0 3px rgba(255, 184, 77, 0.14);
+            box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4);
         }
 
         #${PILL_ID}.kh-dismissing {
@@ -288,22 +231,8 @@
 
         @media (max-width: 960px) {
             #${PILL_ID} {
-                top: 12px;
-                right: 12px;
-                min-width: 292px;
-                max-width: min(352px, calc(100vw - 24px));
-            }
-
-            #${PILL_ID} .kh-main {
-                grid-template-columns: 46px minmax(0, 1fr) max-content 32px;
-                min-height: 56px;
-            }
-
-            #${PILL_ID} .kh-quality-select {
-                width: 86px;
-                min-width: 86px;
-                height: 32px;
-                font-size: 11px;
+                top: 16px;
+                right: 16px;
             }
         }
     `;
@@ -384,13 +313,102 @@
         const style = document.createElement('style');
         style.id = `${PROMPT_ID}-style`;
         style.textContent = `
-        #${PROMPT_ID}{position:fixed;right:20px;bottom:20px;z-index:2147483647;width:min(420px,calc(100vw - 24px));border:1px solid rgba(255,159,28,.34);background:linear-gradient(145deg,rgba(45,90,39,.96),rgba(17,18,22,.96));border-radius:12px;box-shadow:0 16px 34px rgba(0,0,0,.42);color:#fff;font-family:-apple-system,'SF Pro Display','Segoe UI Variable Display',BlinkMacSystemFont,'Helvetica Neue',sans-serif;padding:12px}
-        #${PROMPT_ID} .khp-title{font-weight:700;font-size:13px;margin-bottom:4px}
-        #${PROMPT_ID} .khp-sub{font-size:11px;color:rgba(255,255,255,.72);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:10px}
-        #${PROMPT_ID} .khp-actions{display:flex;gap:8px}
-        #${PROMPT_ID} button{border:1px solid rgba(255,255,255,.16);border-radius:8px;padding:8px 10px;cursor:pointer;font-size:12px;font-weight:700;color:#fff;background:rgba(255,255,255,.06)}
-        #${PROMPT_ID} .khp-primary{background:rgba(74,140,68,.95);border-color:rgba(74,140,68,1)}
-        #${PROMPT_ID} .khp-foot{margin-top:9px;display:flex;align-items:center;gap:6px;font-size:11px;color:rgba(255,255,255,.78)}
+        #${PROMPT_ID} {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 2147483647;
+            width: min(380px, calc(100vw - 24px));
+            background: rgba(18, 18, 18, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            box-shadow:
+                0 20px 40px rgba(0, 0, 0, 0.4),
+                inset 0 1px 1px rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+            padding: 16px;
+            backdrop-filter: blur(24px) saturate(1.2);
+            -webkit-backdrop-filter: blur(24px) saturate(1.2);
+            animation: khukri-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        #${PROMPT_ID}::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), transparent 60%);
+            pointer-events: none;
+        }
+        #${PROMPT_ID} .khp-title {
+            font-weight: 700;
+            font-size: 15px;
+            letter-spacing: -0.01em;
+            margin-bottom: 4px;
+            position: relative;
+            z-index: 1;
+        }
+        #${PROMPT_ID} .khp-sub {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 16px;
+            position: relative;
+            z-index: 1;
+        }
+        #${PROMPT_ID} .khp-actions {
+            display: flex;
+            gap: 8px;
+            position: relative;
+            z-index: 1;
+        }
+        #${PROMPT_ID} button {
+            flex: 1;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.05);
+            transition: all 0.2s ease;
+            box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.02);
+        }
+        #${PROMPT_ID} button:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-1px);
+        }
+        #${PROMPT_ID} .khp-primary {
+            background: linear-gradient(180deg, rgba(16, 185, 129, 0.9), rgba(5, 150, 105, 0.9));
+            border-color: rgba(16, 185, 129, 0.5);
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.2);
+        }
+        #${PROMPT_ID} .khp-primary:hover {
+            background: linear-gradient(180deg, rgba(16, 185, 129, 1), rgba(5, 150, 105, 1));
+            box-shadow: 0 6px 16px rgba(16, 185, 129, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.3);
+            border-color: rgba(16, 185, 129, 0.8);
+        }
+        #${PROMPT_ID} .khp-foot {
+            margin-top: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+            position: relative;
+            z-index: 1;
+        }
+        #${PROMPT_ID} input[type="checkbox"] {
+            margin: 0;
+            accent-color: #10b981;
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+        }
         `;
         document.head.appendChild(style);
     }
@@ -422,6 +440,7 @@
             safeSendMessage({
                 type: 'khukri_prompt_decision',
                 payload: {
+                    ...payload,
                     action: button.dataset.action,
                     remember,
                     id: payload.id,
@@ -731,9 +750,10 @@
     watchVideoPresence();
 
     if (hasExtensionContext()) {
-        chrome.runtime.onMessage.addListener((message) => {
+        chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             if (message?.type === 'khukri_prompt_download' && message.payload) {
                 showDownloadPrompt(message.payload);
+                sendResponse({ ok: true });
             }
         });
     }

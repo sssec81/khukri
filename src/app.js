@@ -287,11 +287,12 @@ function mergeQueueWithProgress(items) {
     return {
       ...item,
       liveStatus,
+      isCompleting: progress?.isCompleting || false,
       bytesDone,
       totalBytes,
       speedBps: backendTerminal ? 0 : (progress?.speedBps ?? 0),
       etaSeconds: backendTerminal ? null : (progress?.etaSeconds ?? null),
-      percent: liveStatus === "complete" || liveStatus === "missing" ? 100 : percent
+      percent: liveStatus === "complete" || liveStatus === "missing" || progress?.isCompleting ? 100 : percent
     };
   });
 }
@@ -400,9 +401,13 @@ function formatProgressSummary(item) {
       ? item.totalBytes
       : Math.min(item.bytesDone ?? 0, item.totalBytes);
     parts.push(`${formatBytes(done)} / ${formatBytes(item.totalBytes)}`);
-  }
-  if (!item.totalBytes && ["active", "queued"].includes(item.liveStatus)) {
-    parts.push("Waiting for size");
+  } else if (["active", "queued"].includes(item.liveStatus)) {
+    const done = Math.max(0, item.bytesDone ?? 0);
+    if (done > 0) {
+      parts.push(`${formatBytes(done)} / Unknown`);
+    } else {
+      parts.push("Waiting for size");
+    }
   }
   return parts.join(" • ");
 }
@@ -446,12 +451,10 @@ function buildRetryRequest(item) {
 function renderDownloadCard(item, index, strings) {
   const liveStatus = safeStatus(item.liveStatus ?? item.status);
   const group = queueGroupForStatus(liveStatus);
-  const isPending = pendingActions.has(item.id);
+  const isPending = pendingActions.has(item.id) || item.isCompleting;
   const pendingAttrs = isPending ? " disabled aria-disabled=\"true\"" : "";
-  const percent = liveStatus === "complete" || liveStatus === "missing" ? 100 : item.percent;
-  const isIndeterminate = ["queued", "active"].includes(liveStatus)
-    && (item.bytesDone ?? 0) <= 0
-    && (!item.totalBytes || item.percent <= 0);
+  const percent = item.isCompleting || liveStatus === "complete" || liveStatus === "missing" ? 100 : item.percent;
+  const isIndeterminate = ["queued", "active"].includes(liveStatus) && !item.totalBytes;
   const progressFillClass = isIndeterminate
     ? `progress-fill progress-fill--${liveStatus} progress-fill--indeterminate`
     : `progress-fill progress-fill--${liveStatus}`;
@@ -467,15 +470,17 @@ function renderDownloadCard(item, index, strings) {
 
   if (group === "active") {
     const primaryAction = liveStatus === "paused" ? "resume" : "pause";
-    const primaryLabel = liveStatus === "paused"
-      ? strings["downloads.actionResume"]
-      : strings["downloads.actionPause"];
+    const primaryLabel = item.isCompleting 
+      ? "Completing..." 
+      : (liveStatus === "paused"
+        ? strings["downloads.actionResume"]
+        : strings["downloads.actionPause"]);
     const summary = formatProgressSummary(item);
 
     actions = `
       <div class="queue-card-actions">
         <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="${htmlEscape(primaryAction)}" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(primaryLabel)}</button>
-        <button class="queue-btn queue-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionCancel"])}</button>
+        ${item.isCompleting ? "" : `<button class="queue-btn queue-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionCancel"])}</button>`}
       </div>
     `;
 
@@ -1106,15 +1111,42 @@ async function main() {
     await eventApi.listen("download-progress", (event) => {
       if (event.payload?.id) {
         const previous = progressById.get(event.payload.id);
-        const isTerminal = ["paused", "failed", "complete", "cancelled"].includes(event.payload.status);
-        const resumesFromTerminal = previous
-          && ["paused", "failed", "complete", "cancelled"].includes(previous.status)
-          && ["queued", "active"].includes(event.payload.status);
-        if (!previous || event.payload.bytesDone >= previous.bytesDone || isTerminal || resumesFromTerminal) {
-          progressById.set(event.payload.id, event.payload);
-        }
-        if (["failed", "complete", "cancelled"].includes(event.payload.status)) {
-          progressById.delete(event.payload.id);
+        
+        if (event.payload.status === "complete") {
+          const heldProgress = {
+            ...event.payload,
+            status: "active",
+            isCompleting: true,
+            speedBps: 0,
+            etaSeconds: null
+          };
+          if (heldProgress.totalBytes) {
+            heldProgress.bytesDone = heldProgress.totalBytes;
+          }
+          progressById.set(event.payload.id, heldProgress);
+          
+          setTimeout(() => {
+            progressById.delete(event.payload.id);
+            renderQueue(currentQueue);
+          }, 1200);
+        } else {
+          const item = currentQueue.find(i => i.id === event.payload.id);
+          const isTerminal = ["paused", "failed", "cancelled"].includes(event.payload.status);
+          const resumesFromTerminal = previous
+            && ["paused", "failed", "complete", "cancelled"].includes(previous.status)
+            && ["queued", "active"].includes(event.payload.status);
+          
+          const isMediaTask = item && (item.requestSource === "blade" || item.requestSource === "stream" || item.mediaQuality != null);
+          const isTrackTransition = isMediaTask && previous && (
+            (previous.bytesDone > 1000000 && event.payload.bytesDone < previous.bytesDone * 0.1)
+          );
+
+          if (!previous || event.payload.bytesDone >= previous.bytesDone || isTerminal || resumesFromTerminal || isTrackTransition) {
+            progressById.set(event.payload.id, event.payload);
+          }
+          if (["failed", "cancelled"].includes(event.payload.status)) {
+            progressById.delete(event.payload.id);
+          }
         }
       }
       renderQueue(currentQueue);
@@ -1126,9 +1158,8 @@ async function main() {
         const liveIds = new Set(currentQueue.map((item) => item.id));
         currentQueue.forEach((item) => {
           const progress = progressById.get(item.id);
-          const keepLiveProgress = item.status === "paused"
-            && Boolean(progress)
-            && progress.status === "paused";
+          const keepLiveProgress = (item.status === "paused" && progress?.status === "paused") ||
+                                   (item.status === "complete" && progress?.status === "active");
           if (!keepLiveProgress && ["paused", "failed", "complete", "cancelled"].includes(item.status)) {
             progressById.delete(item.id);
           }

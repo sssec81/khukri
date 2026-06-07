@@ -18,14 +18,21 @@
             background: #1a1a1e;
             color: #e2e2e6;
             user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         /* ── Layout ── */
         #app {
             display: flex;
             flex-direction: column;
+            width: 100%;
+            max-width: 480px;
             height: 100%;
+            max-height: 300px;
             padding: 20px 22px 16px;
+            background: #1a1a1e;
         }
 
         /* ── Header ── */
@@ -168,6 +175,20 @@
             color: #6b6b78;
             max-width: 300px;
             line-height: 1.5;
+        }
+
+        /* ── Full Tab Fallback ── */
+        /* If the browser forces the popup into a full tab, 
+           it centers nicely like a modal card. */
+        @media (min-width: 481px), (min-height: 301px) {
+            html, body {
+                background: #0f0f13;
+            }
+            #app {
+                border-radius: 12px;
+                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+            }
         }
     </style>
 </head>
