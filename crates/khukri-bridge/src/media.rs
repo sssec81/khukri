@@ -12,6 +12,7 @@ use tokio::time::{timeout, Duration};
 const PROGRESS_PREFIX: &str = "__KHUKRI_PROGRESS__:";
 const FINAL_PATH_PREFIX: &str = "__KHUKRI_FINAL_PATH__:";
 const YTDLP_TIMEOUT: Duration = Duration::from_secs(3600);
+const YTDLP_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaQuality {
@@ -291,23 +292,35 @@ where
                         return Err(anyhow::anyhow!("yt-dlp cancellation channel closed"));
                     }
                 }
-                line = line_rx.recv() => {
-                    let Some(line) = line else {
-                        return Ok(());
+                line = timeout(YTDLP_PROGRESS_TIMEOUT, line_rx.recv()) => {
+                    let line = match line {
+                        Ok(Some(line)) => line,
+                        Ok(None) => {
+                            return Ok(());
+                        }
+                        Err(_) => {
+                            return Err(anyhow::anyhow!(
+                                "yt-dlp produced no output for {} seconds",
+                                YTDLP_PROGRESS_TIMEOUT.as_secs()
+                            ));
+                        }
                     };
 
-                    if let Some(progress) = parse_progress_line(&line) {
-                        on_progress(progress);
-                        continue;
-                    }
+                    {
+                        let line = line;
+                        if let Some(progress) = parse_progress_line(&line) {
+                            on_progress(progress);
+                            continue;
+                        }
 
-                    if let Some(path) = parse_final_path_line(&line) {
-                        final_path = Some(path);
-                        continue;
-                    }
+                        if let Some(path) = parse_final_path_line(&line) {
+                            final_path = Some(path);
+                            continue;
+                        }
 
-                    if let Some(detail) = parse_detail_line(&line) {
-                        last_detail = Some(detail);
+                        if let Some(detail) = parse_detail_line(&line) {
+                            last_detail = Some(detail);
+                        }
                     }
                 }
             }

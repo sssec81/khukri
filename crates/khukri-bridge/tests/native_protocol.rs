@@ -2,12 +2,15 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Once;
 use std::thread;
 
 use axum::{extract::State, http::HeaderMap, response::Response, routing::get, Router};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
+
+static PRIVATE_URLS_ENV: Once = Once::new();
 
 #[derive(Debug, serde::Deserialize)]
 struct BridgeEvent {
@@ -32,7 +35,15 @@ fn sha256(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
+fn enable_private_test_urls() {
+    PRIVATE_URLS_ENV.call_once(|| {
+        // Bridge integration tests use a localhost fixture server.
+        std::env::set_var("KHUKRI_ALLOW_PRIVATE_TEST_URLS", "1");
+    });
+}
+
 async fn spawn_server(router: Router) -> std::net::SocketAddr {
+    enable_private_test_urls();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -108,6 +119,7 @@ async fn test_native_bridge_queues_and_downloads_10mb() {
         .env("HOME", &root)
         .env("USERPROFILE", &root)
         .env("KHUKRI_DATA_DIR", &data_dir)
+        .env("KHUKRI_ALLOW_PRIVATE_TEST_URLS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

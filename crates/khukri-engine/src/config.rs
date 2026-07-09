@@ -8,6 +8,13 @@ use url::Url;
 
 use crate::error::{KhukriError, Result};
 
+fn allow_private_test_urls() -> bool {
+    matches!(
+        std::env::var("KHUKRI_ALLOW_PRIVATE_TEST_URLS").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 // ── Priority ──────────────────────────────────────────────────────────────────
 
 /// Download priority — determines scheduling order in the queue.
@@ -171,23 +178,39 @@ impl DownloadConfig {
             });
         }
 
-        if let Some(host) = parsed_url.host_str() {
-            let lower = host.to_lowercase();
-            // Block localhost, private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16), and loopback addresses.
-            if lower == "localhost"
-                || lower == "127.0.0.1"
-                || lower == "::1"
-                || lower == "[::1]"
-                || lower.starts_with("10.")
-                || lower.starts_with("172.16.")
-                || lower.starts_with("192.168.")
-                || lower.starts_with("169.254.")
-            // link-local
-            {
-                return Err(KhukriError::InvalidConfig {
-                    field: "url",
-                    reason: format!("private or localhost addresses not allowed in downloads"),
-                });
+        if !crate::config::allow_private_test_urls() {
+            if let Some(host) = parsed_url.host() {
+                let mut is_blocked = false;
+                
+                match host {
+                    url::Host::Domain(d) => {
+                        let lower = d.to_lowercase();
+                        if lower == "localhost" {
+                            is_blocked = true;
+                        }
+                    }
+                    url::Host::Ipv4(ipv4) => {
+                        if ipv4.is_loopback() || ipv4.is_private() || ipv4.is_link_local() {
+                            is_blocked = true;
+                        }
+                    }
+                    url::Host::Ipv6(ipv6) => {
+                        let segments = ipv6.segments();
+                        if ipv6.is_loopback() 
+                            || (segments[0] & 0xfe00) == 0xfc00 // ULA
+                            || (segments[0] & 0xffc0) == 0xfe80 // Link-local
+                        {
+                            is_blocked = true;
+                        }
+                    }
+                }
+
+                if is_blocked {
+                    return Err(KhukriError::InvalidConfig {
+                        field: "url",
+                        reason: "private or localhost addresses not allowed in downloads".to_string(),
+                    });
+                }
             }
         }
 

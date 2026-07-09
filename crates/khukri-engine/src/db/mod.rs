@@ -169,6 +169,21 @@ pub async fn set_download_file_path(pool: &SqlitePool, id: &str, file_path: &str
     Ok(())
 }
 
+pub async fn set_download_total_bytes(pool: &SqlitePool, id: &str, total_bytes: u64) -> Result<()> {
+    #[allow(clippy::cast_possible_wrap)]
+    let total = total_bytes as i64;
+    sqlx::query(
+        "UPDATE downloads
+         SET total_bytes = ?
+         WHERE id = ?",
+    )
+    .bind(total)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Atomically move all downloads whose current status is in `from_statuses`
 /// to `to_status` in a single UPDATE statement.
 pub async fn set_download_status_where(

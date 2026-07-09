@@ -30,6 +30,7 @@ uuid = { version = "1", features = ["v4", "v5"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs"] }
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

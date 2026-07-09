@@ -109,8 +109,30 @@ async function sendDecision(token, action, remember) {
         console.warn('Khukri prompt: SW unreachable on decision:', e.message);
         return false;
     } finally {
-        window.close();
+        closeSelf();
     }
+}
+
+function closeSelf() {
+    try {
+        if (chrome.tabs?.getCurrent) {
+            chrome.tabs.getCurrent((tab) => {
+                if (chrome.runtime.lastError) {
+                    window.close();
+                    return;
+                }
+                if (tab?.id) {
+                    chrome.tabs.remove(tab.id, () => window.close());
+                    return;
+                }
+                window.close();
+            });
+            return;
+        }
+    } catch {
+        // Fall through to window.close().
+    }
+    window.close();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +149,7 @@ function showError(message) {
             <button class="btn btn-secondary" id="closeBtn">Close</button>
         </div>
     `;
-    document.getElementById('closeBtn')?.addEventListener('click', () => window.close());
+    document.getElementById('closeBtn')?.addEventListener('click', () => closeSelf());
 }
 
 function renderPrompt(payload, token) {
@@ -186,7 +208,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // sendDecision closes the window; if it didn't (null payload from SW
         // being gone), close manually after a short message.
         showError('Download info unavailable. The download will proceed in the browser.');
-        setTimeout(() => window.close(), 2000);
+        setTimeout(() => closeSelf(), 2000);
         return;
     }
 

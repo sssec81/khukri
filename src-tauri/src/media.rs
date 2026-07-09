@@ -9,12 +9,14 @@ use khukri_engine::{DownloadProgress, DownloadStatus};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch, Mutex};
+use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 
 use crate::bootstrap::app_data_dir;
 
 const PROGRESS_PREFIX: &str = "__KHUKRI_PROGRESS__:";
 const FINAL_PATH_PREFIX: &str = "__KHUKRI_FINAL_PATH__:";
+const YTDLP_PROGRESS_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(target_os = "macos")]
 static PREPARED_SIDECARS: OnceLock<StdMutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
 
@@ -427,8 +429,27 @@ async fn run_media_download(
             return Err("yt-dlp download cancelled".to_string());
         }
 
-        let Some(line) = line_rx.recv().await else {
-            break;
+        let line = match timeout(YTDLP_PROGRESS_TIMEOUT, line_rx.recv()).await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(_) => {
+                set_progress(&tx, |progress| {
+                    progress.status = DownloadStatus::Failed;
+                    progress.speed_bps = 0;
+                    progress.eta_seconds = None;
+                });
+                if let Some(child) = child_slot.lock().await.as_mut() {
+                    let _ = child.kill().await;
+                }
+                let reason = format!(
+                    "yt-dlp produced no output for {} seconds",
+                    YTDLP_PROGRESS_TIMEOUT.as_secs()
+                );
+                state.lock().await.failure_reason = Some(reason.clone());
+                let _ = stdout_task.await.map_err(|e| e.to_string())?;
+                let _ = stderr_task.await.map_err(|e| e.to_string())?;
+                return Err(reason);
+            }
         };
 
         if let Some(progress) = parse_progress_line(&line) {

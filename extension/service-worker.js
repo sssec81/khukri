@@ -15,11 +15,15 @@ const INTERCEPT_MODE_KEY = 'intercept_mode';
 const INTERCEPT_MODE_ASK = 'ask';
 const INTERCEPT_MODE_AUTO = 'auto';
 const PROMPT_STORAGE_PREFIX = 'khukri_prompt_';
+const PROMPT_SUPPRESS_UNTIL_KEY = 'khukri_prompt_suppress_until';
+const PROMPT_TAB_ID_KEY = 'khukri_prompt_tab_id';
+const PROMPT_ACTIVE_TOKEN_KEY = 'khukri_prompt_active_token';
 const BYPASS_TTL_MS = 10000;
 const browserBypassUntil = new Map();
 
 // FIX 6 — retry queue key in chrome.storage.session
 const RETRY_QUEUE_KEY = 'khukri_retry_queue';
+const STARTUP_PROMPT_SUPPRESS_MS = 15000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers — unchanged from original
@@ -258,6 +262,93 @@ function storageSessionRemove(key) {
     return chrome.storage.session.remove(key);
 }
 
+function storageSessionGetAll() {
+    return chrome.storage.session.get(null);
+}
+
+async function clearPromptState({ closeTabs = false } = {}) {
+    try {
+        const all = await storageSessionGetAll();
+        const promptKeys = Object.keys(all).filter((key) =>
+            key.startsWith(PROMPT_STORAGE_PREFIX)
+            || key === PROMPT_TAB_ID_KEY
+            || key === PROMPT_ACTIVE_TOKEN_KEY
+        );
+        if (promptKeys.length > 0) {
+            await chrome.storage.session.remove(promptKeys);
+        }
+    } catch (e) {
+        console.warn('Khukri: Failed to clear prompt session state:', e);
+    }
+
+    if (!closeTabs) return;
+
+    try {
+        const urlPattern = chrome.runtime.getURL('prompt.html') + '*';
+        const tabs = await chrome.tabs.query({ url: urlPattern });
+        for (const tab of tabs) {
+            if (typeof tab.id === 'number') {
+                chrome.tabs.remove(tab.id).catch(() => {});
+            }
+        }
+    } catch (e) {
+        console.warn('Khukri: Failed to close prompt tabs:', e);
+    }
+}
+
+async function suppressPromptWindowsForStartup() {
+    try {
+        await storageSessionSet({
+            [PROMPT_SUPPRESS_UNTIL_KEY]: Date.now() + STARTUP_PROMPT_SUPPRESS_MS
+        });
+    } catch (e) {
+        console.warn('Khukri: Failed to set startup prompt suppression:', e);
+    }
+}
+
+async function shouldSuppressPromptWindowFallback() {
+    try {
+        const result = await storageSessionGet(PROMPT_SUPPRESS_UNTIL_KEY);
+        const until = Number(result?.[PROMPT_SUPPRESS_UNTIL_KEY] || 0);
+        return until > Date.now();
+    } catch (e) {
+        console.warn('Khukri: Failed to read prompt suppression window:', e);
+        return false;
+    }
+}
+
+async function openPromptTabForToken(token) {
+    const promptUrl = chrome.runtime.getURL(`prompt.html?token=${encodeURIComponent(token)}`);
+    try {
+        const result = await storageSessionGet(PROMPT_TAB_ID_KEY);
+        const existingTabId = Number(result?.[PROMPT_TAB_ID_KEY] || 0);
+        if (existingTabId > 0) {
+            try {
+                const updated = await chrome.tabs.update(existingTabId, {
+                    url: promptUrl,
+                    active: true
+                });
+                if (updated?.windowId) {
+                    await chrome.windows.update(updated.windowId, { focused: true });
+                }
+                return true;
+            } catch (e) {
+                await storageSessionRemove(PROMPT_TAB_ID_KEY);
+            }
+        }
+
+        const created = await chrome.tabs.create({ url: promptUrl, active: true });
+        if (typeof created?.id === 'number') {
+            await storageSessionSet({ [PROMPT_TAB_ID_KEY]: created.id });
+            return true;
+        }
+    } catch (e) {
+        console.warn('Khukri: Failed to open prompt tab:', e);
+    }
+
+    return false;
+}
+
 function loadInterceptMode() {
     return new Promise((resolve) => {
         chrome.storage.local.get([INTERCEPT_MODE_KEY], (result) => {
@@ -299,7 +390,11 @@ async function drainRetryQueue() {
         for (const payload of queue) {
             const sent = sendToNative(payload);
             if (!sent) {
-                await restartInBrowser(payload);
+                if (payload.source === 'browser') {
+                    await restartInBrowser(payload);
+                } else {
+                    await pushRetryQueue(payload);
+                }
             }
         }
     } catch (e) {
@@ -361,16 +456,21 @@ function startDownloadInKhukri(downloadItem) {
         customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
     });
 
-    // FIX 6 — if the native bridge is down, queue for retry instead of silently losing the download
+    // FIX 6 — if the native bridge is down, immediately restart in browser, 
+    // using the retry queue as secondary recovery if browser restart fails.
     if (!sent) {
-        void pushRetryQueue({
-            type: 'queue_download',
-            url,
-            filename: normalizeFilename(downloadItem.filename, url),
-            size: downloadItem.fileSize || null,
-            source: 'browser',
-            pageUrl: downloadItem.referrer || null,
-            customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
+        restartInBrowser(downloadItem).then((restarted) => {
+            if (!restarted) {
+                void pushRetryQueue({
+                    type: 'queue_download',
+                    url,
+                    filename: normalizeFilename(downloadItem.filename, url),
+                    size: downloadItem.fileSize || null,
+                    source: 'browser',
+                    pageUrl: downloadItem.referrer || null,
+                    customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
+                });
+            }
         });
     }
 
@@ -379,6 +479,10 @@ function startDownloadInKhukri(downloadItem) {
 
 async function restartInBrowser(payload) {
     if (!payload?.url) return false;
+    if (isYoutubePageUrl(payload.url)) {
+        console.info('Khukri: not restarting YouTube page URL as browser download');
+        return false;
+    }
     bypassNextBrowserDownload(payload.url);
     return new Promise((resolve) => {
         chrome.downloads.download({
@@ -436,48 +540,42 @@ async function openPromptForPayload(payload) {
         console.warn('Khukri: Failed to send DOM prompt to active tab', e);
     }
 
-    const promptUrl = chrome.runtime.getURL(`prompt.html?token=${encodeURIComponent(token)}`);
-    const screenW = self.screen?.width ?? 1280;
-    const screenH = self.screen?.height ?? 800;
-    const popupW = 480;
-    const popupH = 300;
-    const left = Math.max(0, Math.round((screenW - popupW) / 2));
-    const top  = Math.max(0, Math.round((screenH - popupH) / 3));
+    if (await shouldSuppressPromptWindowFallback()) {
+        console.info('Khukri: suppressing popup prompt fallback during startup');
+        await storageSessionRemove(storageKey);
+        if (promptPayload.source === 'browser') {
+            await restartInBrowser(promptPayload);
+            return false;
+        }
+        await pushRetryQueue(promptPayload);
+        return false;
+    }
 
-    return new Promise((resolve) => {
-        chrome.windows.create(
-            {
-                url: promptUrl,
-                type: 'popup',
-                width: popupW,
-                height: popupH,
-                left,
-                top,
-                focused: true
-            },
-            async (win) => {
-                if (chrome.runtime.lastError || !win) {
-                    console.warn(
-                        'Khukri: Prompt window creation failed:',
-                        chrome.runtime.lastError?.message ?? 'win was null'
-                    );
-                    await storageSessionRemove(storageKey);
-                    const sent = sendToNative(promptPayload);
-                    if (!sent) {
-                        const restarted = promptPayload.source === 'browser'
-                            ? await restartInBrowser(promptPayload)
-                            : false;
-                        if (!restarted) {
-                            await pushRetryQueue(promptPayload);
-                        }
-                    }
-                    resolve(false);
-                    return;
-                }
-                resolve(true);
-            }
-        );
-    });
+    try {
+        const current = await storageSessionGet(PROMPT_ACTIVE_TOKEN_KEY);
+        const previousToken = String(current?.[PROMPT_ACTIVE_TOKEN_KEY] || '');
+        if (previousToken) {
+            await storageSessionRemove(`${PROMPT_STORAGE_PREFIX}${previousToken}`);
+        }
+        await storageSessionSet({ [PROMPT_ACTIVE_TOKEN_KEY]: token });
+    } catch (e) {
+        console.warn('Khukri: Failed to update active prompt token:', e);
+    }
+
+    if (await openPromptTabForToken(token)) {
+        return true;
+    }
+
+    await storageSessionRemove(storageKey);
+    if (promptPayload.source === 'browser') {
+        console.info('Khukri: prompt fallback tab unavailable; keeping browser download');
+        await restartInBrowser(promptPayload);
+        return false;
+    }
+
+    console.info('Khukri: prompt fallback tab unavailable; queueing payload for retry');
+    await pushRetryQueue(promptPayload);
+    return false;
 }
 
 // FIX 2 — Removed the chrome.downloads.cancel() call that was here in the
@@ -517,8 +615,14 @@ async function handlePromptDecision(payload, action, remember) {
         }, () => void chrome.runtime.lastError);
     }
 
+    if (action === 'dismiss') {
+        return;
+    }
+
     if (action === 'keep') {
-        await restartInBrowser(payload);
+        if (payload.source === 'browser') {
+            await restartInBrowser(payload);
+        }
         return;
     }
 
@@ -784,9 +888,16 @@ chrome.permissions.onRemoved.addListener(async () => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
     cleanupTabState(tabId);
+    void storageSessionGet(PROMPT_TAB_ID_KEY).then(async (result) => {
+        if (Number(result?.[PROMPT_TAB_ID_KEY] || 0) === tabId) {
+            await chrome.storage.session.remove([PROMPT_TAB_ID_KEY, PROMPT_ACTIVE_TOKEN_KEY]);
+        }
+    });
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
+    await clearPromptState({ closeTabs: true });
+    await suppressPromptWindowsForStartup();
     await pruneDismissedSites();
     await syncWebRequestListener();
     // FIX 6 — drain any retries that survived from before the install/update
@@ -794,6 +905,8 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+    await clearPromptState({ closeTabs: true });
+    await suppressPromptWindowsForStartup();
     await pruneDismissedSites();
     await syncWebRequestListener();
     // FIX 6 — drain retries on browser startup (bridge may be available now)
@@ -802,6 +915,8 @@ chrome.runtime.onStartup.addListener(async () => {
 
 (async () => {
     try {
+        await clearPromptState({ closeTabs: true });
+        await suppressPromptWindowsForStartup();
         await pruneDismissedSites();
         await syncWebRequestListener();
         // FIX 6 — drain retries on SW boot (covers extension reload during dev)

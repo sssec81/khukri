@@ -702,6 +702,11 @@ async fn main() -> Result<()> {
 
                         match result {
                             Ok(outcome) => {
+                                let final_size = std::fs::metadata(&outcome.final_path).map(|m| m.len()).unwrap_or(0);
+                                if final_size > 0 {
+                                    let _ = db::set_download_total_bytes(&pool_for_media, &job.id, final_size).await;
+                                }
+
                                 let _ = db::set_download_file_path(
                                     &pool_for_media,
                                     &job.id,
@@ -722,8 +727,8 @@ async fn main() -> Result<()> {
                                     kind: "progress",
                                     id: job.id.clone(),
                                     status: "complete",
-                                    bytes_done: 0,
-                                    total_bytes: None,
+                                    bytes_done: final_size,
+                                    total_bytes: if final_size > 0 { Some(final_size) } else { None },
                                     speed_bps: 0,
                                     eta_seconds: None,
                                     segments_done: 0,

@@ -98,19 +98,64 @@ pub async fn preallocate(file: &File, size: u64) -> Result<()> {
     #[cfg(target_os = "linux")]
     linux_fallocate(file, size).await?;
 
-    // TODO: implement fcntl(F_PREALLOCATE) via spawn_blocking for better macOS parity.
+    // On macOS, follow up with fcntl(F_PREALLOCATE) for contiguous reservation.
     #[cfg(target_os = "macos")]
-    macos_preallocate_stub(size);
+    macos_preallocate(file, size).await?;
 
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn macos_preallocate_stub(size: u64) {
-    tracing::debug!(
-        bytes = size,
-        "macOS preallocation fallback currently uses set_len"
-    );
+async fn macos_preallocate(file: &File, size: u64) -> Result<()> {
+    if size == 0 {
+        return Ok(());
+    }
+
+    let file_clone = file.try_clone().await.map_err(|_| {
+        KhukriError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "failed to clone file for preallocate operation",
+        ))
+    })?;
+
+    tokio::task::spawn_blocking(move || {
+        use std::os::unix::io::AsRawFd;
+        let fd = file_clone.as_raw_fd();
+
+        let mut store = libc::fstore_t {
+            fst_flags: libc::F_ALLOCATECONTIG,
+            fst_posmode: libc::F_PEOFPOSMODE,
+            fst_offset: 0,
+            fst_length: size as libc::off_t,
+            fst_bytesalloc: 0,
+        };
+
+        // Try contiguous allocation first, then fall back to any allocation.
+        let res = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
+        if res == -1 {
+            store.fst_flags = libc::F_ALLOCATEALL;
+            let res2 = unsafe { libc::fcntl(fd, libc::F_PREALLOCATE, &store) };
+            if res2 == -1 {
+                let errno = std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or_default();
+                if errno == libc::ENOSPC || errno == libc::EDQUOT {
+                    return Err(KhukriError::DiskSpaceError { bytes: size });
+                }
+                tracing::warn!(
+                    bytes = size,
+                    errno,
+                    "macOS F_PREALLOCATE unsupported or failed; continuing with set_len fallback"
+                );
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(KhukriError::Join)??;
+
+    Ok(())
 }
 
 /// Use fallocate(2) to physically reserve disk blocks on Linux.

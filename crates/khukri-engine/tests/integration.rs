@@ -7,6 +7,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
+use std::sync::Once;
 
 use axum::{
     extract::State,
@@ -25,6 +26,8 @@ use khukri_engine::{
     db, spawn_download, start_download, DownloadStatus,
 };
 
+static PRIVATE_URLS_ENV: Once = Once::new();
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// 2 MB of deterministic pseudo-random test data.
@@ -36,12 +39,20 @@ fn test_data() -> Arc<Vec<u8>> {
     )
 }
 
+fn enable_private_test_urls() {
+    PRIVATE_URLS_ENV.call_once(|| {
+        // Integration tests spin up ephemeral localhost servers by design.
+        std::env::set_var("KHUKRI_ALLOW_PRIVATE_TEST_URLS", "1");
+    });
+}
+
 fn sha256(data: &[u8]) -> String {
     format!("{:x}", Sha256::digest(data))
 }
 
 /// Spawn a local HTTP server on a random port. Returns the bound address.
 async fn spawn_server(router: Router) -> SocketAddr {
+    enable_private_test_urls();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {

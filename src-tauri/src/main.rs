@@ -834,7 +834,9 @@ async fn start_managed_download(
 
             if should_emit {
                 let payload = map_progress_event(&snapshot);
-                let _ = app_for_task.emit("download-progress", &payload);
+                if let Err(e) = app_for_task.emit("download-progress", &payload) {
+                    tracing::warn!("Failed to emit progress: {}", e);
+                }
                 last_emit = Some(Instant::now());
             }
 
@@ -945,11 +947,24 @@ async fn start_managed_media_download(
         let mut progress_rx = progress;
         let mut last_emit = None::<Instant>;
         loop {
-            let snapshot = progress_rx.borrow().clone();
+            let mut snapshot = progress_rx.borrow().clone();
             let is_terminal = matches!(
                 snapshot.status,
                 DownloadStatus::Complete | DownloadStatus::Failed | DownloadStatus::Paused
             );
+
+            let mut final_path_cached = None;
+            if snapshot.status == DownloadStatus::Complete {
+                final_path_cached = handle.final_path().await;
+                if let Some(ref final_path) = final_path_cached {
+                    let final_size = std::fs::metadata(final_path).map(|m| m.len()).unwrap_or(0);
+                    if final_size > 0 {
+                        snapshot.bytes_done = final_size;
+                        snapshot.total_bytes = Some(final_size);
+                    }
+                }
+            }
+
             let should_emit = last_emit.is_none()
                 || is_terminal
                 || last_emit
@@ -958,7 +973,9 @@ async fn start_managed_media_download(
 
             if should_emit {
                 let payload = map_progress_event(&snapshot);
-                let _ = app_for_task.emit("download-progress", &payload);
+                if let Err(e) = app_for_task.emit("download-progress", &payload) {
+                    tracing::warn!("Failed to emit progress: {}", e);
+                }
                 last_emit = Some(Instant::now());
             }
 
@@ -966,13 +983,18 @@ async fn start_managed_media_download(
                 active_for_task.lock().await.remove(&id_for_task);
                 match snapshot.status {
                     DownloadStatus::Complete => {
-                        if let Some(final_path) = handle.final_path().await {
+                        if let Some(final_path) = final_path_cached {
                             let _ = db::set_download_file_path(
                                 &pool_for_task,
                                 &snapshot.id,
                                 &final_path.display().to_string(),
                             )
                             .await;
+                        }
+                        if let Some(total_bytes) = snapshot.total_bytes {
+                            let _ = db::set_download_total_bytes(&pool_for_task, &snapshot.id, total_bytes).await;
+                        } else if snapshot.bytes_done > 0 {
+                            let _ = db::set_download_total_bytes(&pool_for_task, &snapshot.id, snapshot.bytes_done).await;
                         }
                         let _ =
                             db::set_download_status(&pool_for_task, &snapshot.id, "complete").await;

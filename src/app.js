@@ -99,9 +99,12 @@ const pendingActions = new Set();
 let currentQueue = [];
 let currentSettings = null;
 let currentView = "downloads";
+let downloadCounter = 0;
 let queueRefreshInFlight = false;
+let queueRefreshInterval = null;
 let settingsDirty = false;
 let renderQueueFrame = null;
+let lastRenderedHTML = "";
 
 function onboardingComplete(settings) {
   return Boolean(settings?.onboarding_complete);
@@ -370,12 +373,11 @@ function sourceLabel(value) {
 
 function renderMetaChips(item, liveStatus) {
   const chips = [
-    statusLabel(liveStatus),
     qualityLabel(item.mediaQuality),
     sourceLabel(item.requestSource)
   ];
 
-  if (item.totalBytes) {
+  if (item.totalBytes && liveStatus !== "complete" && liveStatus !== "missing") {
     chips.push(formatBytes(item.totalBytes));
   }
 
@@ -384,6 +386,19 @@ function renderMetaChips(item, liveStatus) {
       ${chips.map((chip) => `<span class="queue-chip">${htmlEscape(chip)}</span>`).join("")}
     </div>
   `;
+}
+
+function renderMetaChipsInner(item, liveStatus) {
+  const chips = [
+    qualityLabel(item.mediaQuality),
+    sourceLabel(item.requestSource)
+  ];
+
+  if (item.totalBytes && liveStatus !== "complete" && liveStatus !== "missing") {
+    chips.push(formatBytes(item.totalBytes));
+  }
+
+  return chips.map((chip) => `<span class="queue-chip">${htmlEscape(chip)}</span>`).join("");
 }
 
 function formatProgressSummary(item) {
@@ -457,7 +472,7 @@ function renderDownloadCard(item, index, strings) {
   const isIndeterminate = ["queued", "active"].includes(liveStatus) && !item.totalBytes;
   const progressFillClass = isIndeterminate
     ? `progress-fill progress-fill--${liveStatus} progress-fill--indeterminate`
-    : `progress-fill progress-fill--${liveStatus}`;
+    : `progress-fill progress-fill--${liveStatus} progress-fill--determinate`;
   const { ext, category } = fileExtInfo(item.filePath);
   const escapedId = htmlEscape(item.id);
   const fileName = baseName(item.filePath);
@@ -477,26 +492,41 @@ function renderDownloadCard(item, index, strings) {
         : strings["downloads.actionPause"]);
     const summary = formatProgressSummary(item);
 
-    actions = `
-      <div class="queue-card-actions">
-        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="${htmlEscape(primaryAction)}" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(primaryLabel)}</button>
-        ${item.isCompleting ? "" : `<button class="queue-btn queue-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionCancel"])}</button>`}
-      </div>
-    `;
+    actions = ``;
 
     extra = `
-      ${renderMetaChips(item, liveStatus)}
+      <div class="queue-card-chips">
+        ${renderMetaChipsInner(item, liveStatus)}
+        <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
+      </div>
       <div class="queue-card-progress">
         <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${htmlEscape(Math.round(percent))}" aria-label="${htmlEscape(fileName)} progress">
           <div class="${progressFillClass}" style="width:${isIndeterminate ? "35" : percent.toFixed(1)}%"></div>
         </div>
       </div>
-      <div class="queue-card-meta">${htmlEscape(summary)}</div>
+      <div class="queue-card-row">
+        <div class="queue-card-meta">${htmlEscape(summary)}</div>
+        <div class="queue-card-actions" style="margin-left:auto">
+          <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="${htmlEscape(primaryAction)}" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(primaryLabel)}</button>
+          ${item.isCompleting ? "" : `<button class="queue-btn queue-btn-danger row-action" type="button" data-action="cancel" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionCancel"])}</button>`}
+        </div>
+      </div>
     `;
   } else if (group === "failed") {
     const failure = summarizeFailure(item);
 
-    actions = `
+    actions = ``;
+
+    extra = `
+      <div class="queue-card-chips">
+        ${renderMetaChipsInner(item, liveStatus)}
+        <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
+      </div>
+      <div class="queue-failure-panel">
+        <div class="queue-failure-title">${htmlEscape(failure.title)}</div>
+        <div class="queue-failure-copy">${htmlEscape(failure.body)}</div>
+        ${failure.detail ? `<details class="queue-failure-detail"><summary>View full error log</summary><div>${htmlEscape(failure.detail)}</div></details>` : ""}
+      </div>
       <div class="queue-card-actions">
         ${liveStatus === "failed"
           ? `<button class="queue-btn queue-btn-primary row-action" type="button" data-action="retry" data-id="${escapedId}"${pendingAttrs}>Retry</button>`
@@ -504,33 +534,24 @@ function renderDownloadCard(item, index, strings) {
         <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
       </div>
     `;
-
-    extra = `
-      ${renderMetaChips(item, liveStatus)}
-      <div class="queue-failure-panel">
-        <div class="queue-failure-title">${htmlEscape(failure.title)}</div>
-        <div class="queue-failure-copy">${htmlEscape(failure.body)}</div>
-        ${failure.detail ? `<details class="queue-failure-detail"><summary>View full error log</summary><div>${htmlEscape(failure.detail)}</div></details>` : ""}
-      </div>
-    `;
   } else {
-    const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : "Unknown size";
-    actions = `
+    const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : "";
+    actions = ``;
+    extra = `
+      <div class="queue-card-chips">
+        ${renderMetaChipsInner(item, liveStatus)}
+        ${sizeText ? `<span class="queue-chip">${htmlEscape(sizeText)}</span>` : ""}
+        <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
+      </div>
       <div class="queue-card-actions">
         <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="open" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionOpen"])}</button>
         <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
       </div>
     `;
-
-    extra = `
-      ${renderMetaChips(item, liveStatus)}
-      <div class="queue-card-meta">${htmlEscape(sizeText)} • Completed</div>
-    `;
   }
 
   return `
     <article class="download-item queue-card queue-card--${htmlEscape(group)}" tabindex="0" data-row-id="${escapedId}" data-row-index="${index}" data-status="${htmlEscape(liveStatus)}" aria-label="${escapedName}">
-      <div class="queue-card-rail"></div>
       <div class="file-ext file-ext--${htmlEscape(category)}" aria-hidden="true">
         ${htmlEscape(ext.toUpperCase())}
         <div class="file-ext-dot"></div>
@@ -541,7 +562,6 @@ function renderDownloadCard(item, index, strings) {
             <span class="queue-card-title">${escapedName}</span>
             <span class="queue-card-url" title="${escapedUrl}">${escapedUrl}</span>
           </div>
-          <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
         </div>
         ${extra}
         ${actions}
@@ -570,6 +590,7 @@ function renderQueueSync(items) {
     empty.hidden = false;
     list.hidden = true;
     list.innerHTML = "";
+    lastRenderedHTML = "";
     return;
   }
 
@@ -583,7 +604,7 @@ function renderQueueSync(items) {
   };
 
   let rowIndex = 0;
-  list.innerHTML = ["active", "failed", "complete"]
+  const newHTML = ["active", "failed", "complete"]
     .filter((group) => groups[group].length > 0)
     .map((group) => `
       <section class="queue-section queue-section--${group}">
@@ -598,10 +619,61 @@ function renderQueueSync(items) {
     `)
     .join("");
 
-  if (focusedRowId) {
-    list.querySelector(`[data-row-id="${focusedRowId}"]`)?.focus();
+  if (lastRenderedHTML !== newHTML) {
+    // Capture current RENDERED widths before innerHTML swap.
+    // Must use getBoundingClientRect — inline style.width is "" for CSS-driven
+    // bars. Only capture determinate fills (those with an inline style.width).
+    const prevWidths = new Map();
+    list.querySelectorAll(".download-item[data-row-id]").forEach((card) => {
+      const rowId = card.dataset.rowId;
+      if (!rowId) return;
+      const fill = card.querySelector(".progress-fill--determinate");
+      const track = card.querySelector(".progress-track");
+      if (!fill || !track) return;
+      const fillPx = fill.getBoundingClientRect().width;
+      const trackPx = track.getBoundingClientRect().width;
+      if (trackPx > 0) {
+        const pct = ((fillPx / trackPx) * 100).toFixed(2);
+        prevWidths.set(rowId, `${pct}%`);
+      }
+    });
+
+    list.innerHTML = newHTML;
+    lastRenderedHTML = newHTML;
+
+    // Restore old widths on newly-created determinate fills, then animate to target.
+    if (prevWidths.size > 0) {
+      list.querySelectorAll(".download-item[data-row-id]").forEach((card) => {
+        const rowId = card.dataset.rowId;
+        if (!rowId) return;
+        const fill = card.querySelector(".progress-fill--determinate");
+        if (!fill) return;
+        const prev = prevWidths.get(rowId);
+        if (!prev) return;
+        const target = fill.style.width;
+        if (!target || target === prev) return;
+        // Pin to previous width with no transition
+        fill.style.transition = "none";
+        fill.style.width = prev;
+        // Double rAF: first rAF runs before paint but after style recalc,
+        // second rAF guarantees the pinned width is committed to layout
+        // before we release the transition — otherwise WebKit skips it.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            fill.style.transition = "";
+            fill.style.width = target;
+          });
+        });
+      });
+    }
+
+    if (focusedRowId) {
+      list.querySelector(`[data-row-id="${focusedRowId}"]`)?.focus();
+    }
   }
+
 }
+
 
 function showView(view) {
   currentView = view;
@@ -893,6 +965,11 @@ function registerThemeWatcher() {
 }
 
 async function main() {
+  if (queueRefreshInterval) {
+    clearInterval(queueRefreshInterval);
+    queueRefreshInterval = null;
+  }
+
   const strings = await loadStrings();
   window.__KHUKRI_STRINGS__ = strings;
   applyStrings(strings);
@@ -1125,9 +1202,12 @@ async function main() {
           }
           progressById.set(event.payload.id, heldProgress);
           
-          setTimeout(() => {
-            progressById.delete(event.payload.id);
-            renderQueue(currentQueue);
+          window.setTimeout(() => {
+            const current = progressById.get(event.payload.id);
+            if (current && current.isCompleting) {
+              progressById.delete(event.payload.id);
+              renderQueue(currentQueue);
+            }
           }, 1200);
         } else {
           const item = currentQueue.find(i => i.id === event.payload.id);
@@ -1210,8 +1290,12 @@ async function main() {
   await refreshQueue(strings);
   void invoke("pump_queue").catch(() => { });
 
+  if (queueRefreshInterval !== null) {
+    window.clearInterval(queueRefreshInterval);
+  }
+
   // Keep queue view feeling instant even if event delivery is delayed.
-  window.setInterval(() => {
+  queueRefreshInterval = window.setInterval(() => {
     void refreshQueue(strings, { preserveStatus: true });
   }, 1200);
 }
