@@ -1,6 +1,6 @@
 # Extension Architecture
 
-This document gives AI-assisted sessions one place to understand the current MV3 extension message flow without re-deriving it from the code each time.
+This document summarizes the current MV3 extension message flow and the boundaries between its runtime components.
 
 ## Runtime boundaries
 

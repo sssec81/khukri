@@ -21,13 +21,11 @@ const PROMPT_ACTIVE_TOKEN_KEY = 'khukri_prompt_active_token';
 const BYPASS_TTL_MS = 10000;
 const browserBypassUntil = new Map();
 
-// FIX 6 — retry queue key in chrome.storage.session
+// Retry state lives in session storage so it survives service worker restarts.
 const RETRY_QUEUE_KEY = 'khukri_retry_queue';
 const STARTUP_PROMPT_SUPPRESS_MS = 15000;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers — unchanged from original
-// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
 
 function isTargetStream(url) {
     return STREAM_PATTERNS.some((pattern) => pattern.test(url || ''));
@@ -382,18 +380,13 @@ function loadInterceptMode() {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FIX 6 — Retry queue
-// When sendToNative fails and restartInBrowser also fails, the payload is
-// pushed into chrome.storage.session. drainRetryQueue() is called on every SW
-// wake so pending downloads are eventually delivered.
-// ─────────────────────────────────────────────────────────────────────────────
+// Failed handoffs are retried whenever the service worker wakes up.
 
 async function pushRetryQueue(payload) {
     try {
         const result = await chrome.storage.session.get(RETRY_QUEUE_KEY);
         const existing = Array.isArray(result[RETRY_QUEUE_KEY]) ? result[RETRY_QUEUE_KEY] : [];
-        // Cap the queue at 20 entries to avoid unbounded growth
+        // Keep session storage bounded if the native host remains unavailable.
         const next = [...existing, payload].slice(-20);
         await chrome.storage.session.set({ [RETRY_QUEUE_KEY]: next });
     } catch (e) {
@@ -456,13 +449,7 @@ async function pruneDismissedSites() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Download actions
-// ─────────────────────────────────────────────────────────────────────────────
-
-// FIX 7 — removed the redundant ensureNativePort() call; sendToNative() does
-//          it internally. Also removed chrome.downloads.cancel() from here —
-//          FIX 1 moves it to the onCreated listener so it fires synchronously.
 async function startDownloadInKhukri(downloadItem) {
     const url = downloadItem.finalUrl || downloadItem.url;
 
@@ -476,8 +463,7 @@ async function startDownloadInKhukri(downloadItem) {
         customHeaders: buildCustomHeaders({ referer: downloadItem.referrer, pageUrl: downloadItem.referrer })
     });
 
-    // FIX 6 — if the native bridge is down, immediately restart in browser, 
-    // using the retry queue as secondary recovery if browser restart fails.
+    // Fall back to Chrome before retaining the request for another bridge attempt.
     if (!sent) {
         restartInBrowser(downloadItem).then((restarted) => {
             if (!restarted) {
@@ -533,8 +519,7 @@ async function openPromptForPayload(payload) {
 
     await storageSessionSet({ [storageKey]: promptPayload });
 
-    // Try to display the prompt directly in the active tab (DOM overlay)
-    // to completely avoid browser popup blockers and tab-forcing behavior.
+    // Prefer an in-page prompt; Chromium may turn extension popups into tabs.
     try {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
         const activeTab = tabs[0];
@@ -598,14 +583,6 @@ async function openPromptForPayload(payload) {
     return false;
 }
 
-// FIX 2 — Removed the chrome.downloads.cancel() call that was here in the
-//          original. Cancellation is now done synchronously in onCreated (FIX 1)
-//          before this function is ever called, so doing it again here would
-//          trigger a harmless-but-noisy error on an already-cancelled download.
-//
-// FIX 2 — Fixed the chrome.windows.create success check: we now test `!win`
-//          in addition to `chrome.runtime.lastError`, because some Chrome
-//          versions pass a null `win` without setting lastError.
 async function openDownloadPrompt(downloadItem) {
     const url = downloadItem.finalUrl || downloadItem.url;
     return openPromptForPayload({
@@ -624,10 +601,6 @@ async function openDownloadPrompt(downloadItem) {
     });
 }
 
-// FIX 4 — storageSessionRemove is now called BEFORE dispatching the action.
-//          Previously it was called after, meaning a double-fire (e.g. user
-//          clicks twice before the SW processes) could dispatch the action
-//          twice. Removing the key first makes the handler idempotent.
 async function handlePromptDecision(payload, action, remember) {
     if (remember === true && (action === 'start' || action === 'keep')) {
         chrome.storage.local.set({
@@ -671,29 +644,16 @@ async function handlePromptDecision(payload, action, remember) {
     return false;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FIX 1 — downloads.onCreated
-// The single most important change: chrome.downloads.cancel() now fires
-// SYNCHRONOUSLY at the top of the listener, before loadInterceptMode() is
-// awaited. This guarantees the download is stopped even if the async chain
-// takes a long time (storage read, window creation) or if the SW is briefly
-// suspended between microtasks.
-//
-// Why this matters: in the original code, cancel() was called inside
-// openDownloadPrompt(), which is only reached after two async hops
-// (loadInterceptMode resolves, then openDownloadPrompt is called). Chrome can
-// complete a small file download in that window, making interception useless.
-// ─────────────────────────────────────────────────────────────────────────────
+// Cancel before the first async operation. Small downloads may otherwise finish
+// while storage and prompt state are being resolved.
 chrome.downloads.onCreated.addListener((downloadItem) => {
     const url = downloadItem.finalUrl || downloadItem.url;
 
     if (!canHandleDownload(url)) return;
     if (shouldBypassBrowserDownload(url)) return;
 
-    // FIX 1 — SYNCHRONOUS cancel before any async work
     chrome.downloads.cancel(downloadItem.id, () => void chrome.runtime.lastError);
 
-    // FIX 6 — drain any queued retries from a previous bridge-unavailable state
     void drainRetryQueue();
 
     void loadInterceptMode().then((mode) => {
@@ -705,9 +665,7 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
     });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Stream detection (webRequest path) — unchanged from original
-// ─────────────────────────────────────────────────────────────────────────────
+// Stream detection
 
 function onStreamRequest(details) {
     if (!isTargetStream(details.url)) return;
@@ -746,9 +704,7 @@ async function syncWebRequestListener() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Message handler
-// ─────────────────────────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender) => {
     if (!message || !message.type) return;
@@ -850,17 +806,14 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         return storageSessionGet(storageKey).then((result) => result[storageKey] || null);
     }
 
-    // FIX 5 — storageSessionRemove() now fires BEFORE handlePromptDecision(),
-    //          making this handler idempotent against double-fire. The original
-    //          code removed the key after the action, which meant a concurrent
-    //          second message could re-read the same payload and act twice.
     if (message.type === 'khukri_prompt_choose') {
         const token = String(message.token || '');
         const storageKey = `${PROMPT_STORAGE_PREFIX}${token}`;
         return storageSessionGet(storageKey).then(async (result) => {
             const payload = result[storageKey];
             if (!payload) return { ok: false };
-            await storageSessionRemove(storageKey);       // FIX 5 — remove first
+            // Claim the prompt before dispatching so a double-click cannot queue twice.
+            await storageSessionRemove(storageKey);
             const sent = await handlePromptDecision(payload, message.action, message.remember);
             return {
                 ok: sent !== false,
@@ -870,29 +823,15 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FIX 3 — Keepalive port for the prompt popup
-// prompt.html should open a Port with name 'khukri_prompt_keepalive' as soon
-// as it loads (see prompt.js changes). While that port is open, Chrome will
-// not suspend this service worker, ensuring the user can take as long as they
-// need to read the dialog before clicking.
-//
-// The handler here is intentionally minimal: we just hold the port open and
-// let the disconnect event clean itself up.
-// ─────────────────────────────────────────────────────────────────────────────
+// The prompt keeps this port open to prevent MV3 worker suspension mid-decision.
 chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'khukri_prompt_keepalive') return;
-    // Holding the reference is enough — Chrome won't suspend the SW.
     port.onDisconnect.addListener(() => {
-        // Port closed (user clicked a button or closed the window). Nothing
-        // to do here; the decision is handled via khukri_prompt_choose above.
-        void chrome.runtime.lastError; // suppress "port closed" noise
+        void chrome.runtime.lastError;
     });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Lifecycle listeners
-// ─────────────────────────────────────────────────────────────────────────────
 
 chrome.permissions.onAdded.addListener(async () => {
     await syncWebRequestListener();
@@ -916,7 +855,6 @@ chrome.runtime.onInstalled.addListener(async () => {
     await suppressPromptWindowsForStartup();
     await pruneDismissedSites();
     await syncWebRequestListener();
-    // FIX 6 — drain any retries that survived from before the install/update
     await drainRetryQueue();
 });
 
@@ -925,7 +863,6 @@ chrome.runtime.onStartup.addListener(async () => {
     await suppressPromptWindowsForStartup();
     await pruneDismissedSites();
     await syncWebRequestListener();
-    // FIX 6 — drain retries on browser startup (bridge may be available now)
     await drainRetryQueue();
 });
 
@@ -935,7 +872,6 @@ chrome.runtime.onStartup.addListener(async () => {
         await suppressPromptWindowsForStartup();
         await pruneDismissedSites();
         await syncWebRequestListener();
-        // FIX 6 — drain retries on SW boot (covers extension reload during dev)
         await drainRetryQueue();
     } catch (error) {
         console.error('Khukri: boot-time listener sync failed:', error);

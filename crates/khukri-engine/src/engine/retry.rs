@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use rand::Rng;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+#[cfg(debug_assertions)]
+use tracing::debug;
+use tracing::warn;
 
 use crate::config::RetryConfig;
 use crate::error::{KhukriError, Result};

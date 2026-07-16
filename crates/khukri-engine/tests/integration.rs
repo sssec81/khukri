@@ -3,11 +3,11 @@
 /// Spins up a local axum HTTP server for each test — no external network required.
 /// Tests cover: segmented download, streaming fallback, retry on 5xx, permanent errors.
 use std::net::SocketAddr;
+use std::sync::Once;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
-use std::sync::Once;
 
 use axum::{
     extract::State,

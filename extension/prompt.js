@@ -1,45 +1,18 @@
-// =============================================================================
-// Khukri Extension — prompt.js
-// Download interception prompt popup script.
-//
-// This script runs inside prompt.html, which is opened as a chrome popup
-// window by the service worker when intercept_mode is 'ask'.
-//
-// Flow:
-//   1. Parse ?token= from the URL
-//   2. Open keepalive port so the SW stays alive while user reads the dialog
-//   3. Load the download payload from SW via khukri_prompt_get
-//   4. Render filename, size, URL into the UI
-//   5. User clicks "Start in Khukri" or "Keep in Browser"
-//   6. Send khukri_prompt_choose to SW with the decision
-//   7. Close the popup
-// =============================================================================
+// Ask-mode download prompt. The payload itself stays in session storage and is
+// addressed by the token in this page's query string.
 
 'use strict';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// FIX 3 — Keepalive port
-// Open immediately, before anything else. While this port is alive the service
-// worker cannot be suspended by Chrome. This means the user can take their
-// time reading the dialog and clicking — the SW will still be there.
-// ─────────────────────────────────────────────────────────────────────────────
-let _keepalivePort = null;
+let keepalivePort = null;
 try {
-    _keepalivePort = chrome.runtime.connect({ name: 'khukri_prompt_keepalive' });
+    keepalivePort = chrome.runtime.connect({ name: 'khukri_prompt_keepalive' });
 } catch (e) {
-    // Extension was reloaded between popup open and script execution.
-    // Nothing we can do — the popup will show an error state below.
     console.warn('Khukri prompt: could not open keepalive port:', e.message);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
 const PROMPT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes — after this, auto-keep
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function getToken() {
     try {
@@ -69,9 +42,7 @@ function truncateUrl(url, maxLen = 52) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SW communication
-// ─────────────────────────────────────────────────────────────────────────────
+// Service worker communication
 
 async function loadPayload(token) {
     let payload;
@@ -84,11 +55,11 @@ async function loadPayload(token) {
 
     if (!payload) return null;
 
-    // TTL guard — if popup was somehow left open for too long, auto-keep
+    // Stale prompts should not retain a cancelled browser download indefinitely.
     if (Date.now() - payload.createdAt > PROMPT_MAX_AGE_MS) {
         console.warn('Khukri prompt: payload too old, auto-keeping in browser');
         await sendDecision(token, 'keep', false);
-        return null; // sendDecision closes the window
+        return null;
     }
 
     return payload;
@@ -104,8 +75,6 @@ async function sendDecision(token, action, remember) {
         });
         return result?.ok === true;
     } catch (e) {
-        // SW died between popup open and button click. The download was already
-        // cancelled; the SW retry queue will recover it on next wake.
         console.warn('Khukri prompt: SW unreachable on decision:', e.message);
         return false;
     } finally {
@@ -135,9 +104,7 @@ function closeSelf() {
     window.close();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // UI rendering
-// ─────────────────────────────────────────────────────────────────────────────
 
 function showError(message) {
     const app = document.getElementById('app');
@@ -164,7 +131,7 @@ function renderPrompt(payload, token) {
     if (sizeEl) sizeEl.textContent = formatBytes(payload.size);
     if (urlEl) {
         urlEl.textContent = truncateUrl(payload.url);
-        urlEl.title = payload.url; // full URL on hover
+        urlEl.title = payload.url;
     }
 
     startBtn?.addEventListener('click', async () => {
@@ -184,9 +151,7 @@ function renderPrompt(payload, token) {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // Boot
-// ─────────────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
     const token = getToken();
@@ -196,17 +161,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    if (!_keepalivePort) {
-        // Keepalive failed — extension was probably reloaded. Still try to work.
+    if (!keepalivePort) {
         console.warn('Khukri prompt: running without keepalive port (SW may sleep)');
     }
 
     const payload = await loadPayload(token);
 
     if (!payload) {
-        // loadPayload already handled the fallback (auto-keep or error)
-        // sendDecision closes the window; if it didn't (null payload from SW
-        // being gone), close manually after a short message.
         showError('Download info unavailable. The download will proceed in the browser.');
         setTimeout(() => closeSelf(), 2000);
         return;

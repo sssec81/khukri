@@ -181,7 +181,7 @@ impl DownloadConfig {
         if !crate::config::allow_private_test_urls() {
             if let Some(host) = parsed_url.host() {
                 let mut is_blocked = false;
-                
+
                 match host {
                     url::Host::Domain(d) => {
                         let lower = d.to_lowercase();
@@ -196,10 +196,9 @@ impl DownloadConfig {
                     }
                     url::Host::Ipv6(ipv6) => {
                         let segments = ipv6.segments();
-                        if ipv6.is_loopback() 
-                            || (segments[0] & 0xfe00) == 0xfc00 // ULA
-                            || (segments[0] & 0xffc0) == 0xfe80 // Link-local
-                        {
+                        let is_unique_local = (segments[0] & 0xfe00) == 0xfc00;
+                        let is_link_local = (segments[0] & 0xffc0) == 0xfe80;
+                        if ipv6.is_loopback() || is_unique_local || is_link_local {
                             is_blocked = true;
                         }
                     }
@@ -208,7 +207,8 @@ impl DownloadConfig {
                 if is_blocked {
                     return Err(KhukriError::InvalidConfig {
                         field: "url",
-                        reason: "private or localhost addresses not allowed in downloads".to_string(),
+                        reason: "private or localhost addresses not allowed in downloads"
+                            .to_string(),
                     });
                 }
             }
