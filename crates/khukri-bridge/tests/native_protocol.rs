@@ -268,3 +268,76 @@ async fn test_native_bridge_queues_and_downloads_10mb() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_native_bridge_pauses_download_when_port_disconnects() {
+    enable_private_test_urls();
+    let root = std::env::temp_dir().join(format!(
+        "khukri_bridge_disconnect_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let data_dir = root.join("data");
+    std::fs::create_dir_all(root.join("Downloads")).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_khukri-bridge"))
+        .env("HOME", &root)
+        .env("USERPROFILE", &root)
+        .env("KHUKRI_DATA_DIR", &data_dir)
+        .env("KHUKRI_ALLOW_PRIVATE_TEST_URLS", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    write_framed(
+        &mut stdin,
+        json!({
+            "type": "queue_download",
+            "url": "http://127.0.0.1:9/disconnect.bin",
+            "filename": "disconnect.bin",
+            "source": "test"
+        }),
+    );
+
+    // Dropping the Native Messaging input pipe models Chrome closing the
+    // long-lived native port while a download is being started.
+    drop(stdin);
+
+    let exit_status = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("bridge did not exit after its Native Messaging port closed");
+    });
+
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(exit_status.success(), "bridge stderr:\n{stderr}");
+
+    let db_url = format!("sqlite:{}?mode=ro", data_dir.join("state.db").display());
+    let pool = sqlx::SqlitePool::connect(&db_url).await.unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM downloads LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "paused", "bridge stderr:\n{stderr}");
+}

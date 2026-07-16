@@ -366,6 +366,10 @@ fn request_with_settings(
     if request.bytes_per_sec.is_none() {
         request.bytes_per_sec = settings.performance.bandwidth_cap;
     }
+    if request.quality.is_none() && should_use_ytdlp(request.source.as_deref(), None, &request.url)
+    {
+        request.quality = Some("best".to_string());
+    }
     request
 }
 
@@ -756,7 +760,11 @@ async fn start_managed_download(
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    if should_use_ytdlp(request.source.as_deref(), request.quality.as_deref()) {
+    if should_use_ytdlp(
+        request.source.as_deref(),
+        request.quality.as_deref(),
+        &request.url,
+    ) {
         return start_managed_media_download(
             app,
             pool,
@@ -992,9 +1000,19 @@ async fn start_managed_media_download(
                             .await;
                         }
                         if let Some(total_bytes) = snapshot.total_bytes {
-                            let _ = db::set_download_total_bytes(&pool_for_task, &snapshot.id, total_bytes).await;
+                            let _ = db::set_download_total_bytes(
+                                &pool_for_task,
+                                &snapshot.id,
+                                total_bytes,
+                            )
+                            .await;
                         } else if snapshot.bytes_done > 0 {
-                            let _ = db::set_download_total_bytes(&pool_for_task, &snapshot.id, snapshot.bytes_done).await;
+                            let _ = db::set_download_total_bytes(
+                                &pool_for_task,
+                                &snapshot.id,
+                                snapshot.bytes_done,
+                            )
+                            .await;
                         }
                         let _ =
                             db::set_download_status(&pool_for_task, &snapshot.id, "complete").await;
@@ -1499,6 +1517,25 @@ mod tests {
         );
 
         assert_eq!(path, default_dir.join("sample.bin"));
+    }
+
+    #[test]
+    fn youtube_request_defaults_to_best_media_mode() {
+        let settings = AppSettings::default();
+        let request = StartDownloadRequest {
+            url: "https://www.youtube.com/watch?v=abc".to_string(),
+            file_path: String::new(),
+            priority: None,
+            override_threads: None,
+            bytes_per_sec: None,
+            quality: None,
+            source: None,
+            custom_headers: HashMap::new(),
+        };
+
+        let normalized = request_with_settings(request, &settings);
+
+        assert_eq!(normalized.quality.as_deref(), Some("best"));
     }
 
     #[test]

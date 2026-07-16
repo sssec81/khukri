@@ -87,24 +87,44 @@ function sendToNative(payload) {
     const port = ensureNativePort();
     if (!port) {
         console.warn('Khukri: Native bridge not available for payload:', payload.url);
-        return false;
+        return Promise.resolve(false);
     }
 
-    try {
-        console.info('Khukri SW: posting payload to native host', {
-            source: payload.source,
-            url: payload.url,
-            pageUrl: payload.pageUrl,
-            quality: payload.quality || null
-        });
-        port.postMessage(payload);
-        return true;
-    } catch (e) {
-        console.error('Khukri: Failed to send message to native host:', e);
-        nativePort = null;
-        lastDisconnectTime = Date.now();
-        return false;
-    }
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (sent) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            port.onMessage.removeListener(onMessage);
+            port.onDisconnect.removeListener(onDisconnect);
+            resolve(sent);
+        };
+        const onMessage = () => finish(true);
+        const onDisconnect = () => finish(false);
+        const timer = setTimeout(() => {
+            console.warn('Khukri: Native bridge did not acknowledge the download');
+            finish(false);
+        }, 2500);
+
+        port.onMessage.addListener(onMessage);
+        port.onDisconnect.addListener(onDisconnect);
+
+        try {
+            console.info('Khukri SW: posting payload to native host', {
+                source: payload.source,
+                url: payload.url,
+                pageUrl: payload.pageUrl,
+                quality: payload.quality || null
+            });
+            port.postMessage(payload);
+        } catch (e) {
+            console.error('Khukri: Failed to send message to native host:', e);
+            nativePort = null;
+            lastDisconnectTime = Date.now();
+            finish(false);
+        }
+    });
 }
 
 function dedupeKey(details) {
@@ -388,7 +408,7 @@ async function drainRetryQueue() {
         if (!Array.isArray(queue) || queue.length === 0) return;
         await chrome.storage.session.remove(RETRY_QUEUE_KEY);
         for (const payload of queue) {
-            const sent = sendToNative(payload);
+            const sent = await sendToNative(payload);
             if (!sent) {
                 if (payload.source === 'browser') {
                     await restartInBrowser(payload);
@@ -443,10 +463,10 @@ async function pruneDismissedSites() {
 // FIX 7 — removed the redundant ensureNativePort() call; sendToNative() does
 //          it internally. Also removed chrome.downloads.cancel() from here —
 //          FIX 1 moves it to the onCreated listener so it fires synchronously.
-function startDownloadInKhukri(downloadItem) {
+async function startDownloadInKhukri(downloadItem) {
     const url = downloadItem.finalUrl || downloadItem.url;
 
-    const sent = sendToNative({
+    const sent = await sendToNative({
         type: 'queue_download',
         url,
         filename: normalizeFilename(downloadItem.filename, url),
@@ -616,18 +636,18 @@ async function handlePromptDecision(payload, action, remember) {
     }
 
     if (action === 'dismiss') {
-        return;
+        return true;
     }
 
     if (action === 'keep') {
         if (payload.source === 'browser') {
             await restartInBrowser(payload);
         }
-        return;
+        return true;
     }
 
     if (action === 'start') {
-        const sent = sendToNative({
+        const sent = await sendToNative({
             type: 'queue_download',
             url: payload.url,
             filename: normalizeFilename(payload.filename || '', payload.url),
@@ -643,23 +663,12 @@ async function handlePromptDecision(payload, action, remember) {
         if (!sent) {
             if (payload.source === 'browser') {
                 await restartInBrowser(payload);
-            } else {
-                await pushRetryQueue({
-                    type: 'queue_download',
-                    url: payload.url,
-                    filename: normalizeFilename(payload.filename || '', payload.url),
-                    size: payload.size || null,
-                    source: payload.source || 'browser',
-                    pageUrl: payload.pageUrl || payload.referrer || null,
-                    quality: payload.quality || null,
-                    customHeaders: payload.customHeaders || buildCustomHeaders({
-                        referer: payload.pageUrl || payload.referrer || null,
-                        pageUrl: payload.pageUrl || payload.referrer || null
-                    })
-                });
             }
         }
+        return sent;
     }
+
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -692,7 +701,7 @@ chrome.downloads.onCreated.addListener((downloadItem) => {
             void openDownloadPrompt(downloadItem);
             return;
         }
-        startDownloadInKhukri(downloadItem);
+        void startDownloadInKhukri(downloadItem);
     });
 });
 
@@ -822,13 +831,17 @@ chrome.runtime.onMessage.addListener((message, sender) => {
                 return;
             }
 
-            sendToNative(payload);
+            const sent = await sendToNative(payload);
+            if (!sent) await pushRetryQueue(payload);
         })();
     }
 
     if (message.type === 'khukri_prompt_decision') {
         const payload = message.payload || {};
-        void handlePromptDecision(payload, payload.action, payload.remember);
+        return handlePromptDecision(payload, payload.action, payload.remember).then((sent) => ({
+            ok: sent !== false,
+            error: sent === false ? 'Khukri could not connect to its native bridge. Reload the extension and try again.' : null
+        }));
     }
 
     if (message.type === 'khukri_prompt_get') {
@@ -848,8 +861,11 @@ chrome.runtime.onMessage.addListener((message, sender) => {
             const payload = result[storageKey];
             if (!payload) return { ok: false };
             await storageSessionRemove(storageKey);       // FIX 5 — remove first
-            await handlePromptDecision(payload, message.action, message.remember);
-            return { ok: true };
+            const sent = await handlePromptDecision(payload, message.action, message.remember);
+            return {
+                ok: sent !== false,
+                error: sent === false ? 'Khukri could not connect to its native bridge. Reload the extension and try again.' : null
+            };
         });
     }
 });

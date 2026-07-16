@@ -13,10 +13,12 @@ use media::{should_use_ytdlp, MediaQuality, YtDlpJob};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::{mpsc, watch};
-use tokio::time::{sleep, Duration};
+use tokio::task::JoinSet;
+use tokio::time::{sleep, timeout, Duration};
 
 const HOST_ID: &str = "com.khukri.host";
 const BRIDGE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const BRIDGE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
@@ -574,6 +576,11 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Every job observes this signal. Native Messaging closes stdin when its
+    // port disappears, so EOF becomes the bridge-wide graceful-pause signal.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut download_tasks = JoinSet::new();
+
     while let Some(message) = read_rx.recv().await {
         let message = match message {
             Ok(message) => message,
@@ -633,6 +640,7 @@ async fn main() -> Result<()> {
                     let path_display = output_path.display().to_string();
                     let tx = writer_tx.clone();
                     let pool_for_media = pool.clone();
+                    let mut bridge_shutdown = shutdown_rx.clone();
 
                     db::upsert_download(
                         &pool,
@@ -669,18 +677,35 @@ async fn main() -> Result<()> {
                         message: Some("starting yt-dlp".to_string()),
                     });
 
-                    tokio::spawn(async move {
+                    download_tasks.spawn(async move {
                         let (cancel_tx, cancel_rx) = watch::channel(false);
                         let cancel_pool = pool_for_media.clone();
                         let cancel_id = job.id.clone();
                         let cancel_task = tokio::spawn(async move {
                             loop {
-                                sleep(BRIDGE_CANCEL_POLL_INTERVAL).await;
-                                match db::get_download(&cancel_pool, &cancel_id).await {
-                                    Ok(Some(row)) if row.status == "active" => {}
-                                    _ => {
-                                        let _ = cancel_tx.send(true);
-                                        break;
+                                tokio::select! {
+                                    changed = bridge_shutdown.changed() => {
+                                        if changed.is_err() || *bridge_shutdown.borrow() {
+                                            // Persist pause before stopping yt-dlp so its error
+                                            // path preserves resumable state rather than marking
+                                            // the IPC disconnect as a download failure.
+                                            let _ = db::set_download_status(
+                                                &cancel_pool,
+                                                &cancel_id,
+                                                "paused",
+                                            ).await;
+                                            let _ = cancel_tx.send(true);
+                                            break;
+                                        }
+                                    }
+                                    _ = sleep(BRIDGE_CANCEL_POLL_INTERVAL) => {
+                                        match db::get_download(&cancel_pool, &cancel_id).await {
+                                            Ok(Some(row)) if row.status == "active" => {}
+                                            _ => {
+                                                let _ = cancel_tx.send(true);
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -702,9 +727,16 @@ async fn main() -> Result<()> {
 
                         match result {
                             Ok(outcome) => {
-                                let final_size = std::fs::metadata(&outcome.final_path).map(|m| m.len()).unwrap_or(0);
+                                let final_size = std::fs::metadata(&outcome.final_path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
                                 if final_size > 0 {
-                                    let _ = db::set_download_total_bytes(&pool_for_media, &job.id, final_size).await;
+                                    let _ = db::set_download_total_bytes(
+                                        &pool_for_media,
+                                        &job.id,
+                                        final_size,
+                                    )
+                                    .await;
                                 }
 
                                 let _ = db::set_download_file_path(
@@ -728,7 +760,11 @@ async fn main() -> Result<()> {
                                     id: job.id.clone(),
                                     status: "complete",
                                     bytes_done: final_size,
-                                    total_bytes: if final_size > 0 { Some(final_size) } else { None },
+                                    total_bytes: if final_size > 0 {
+                                        Some(final_size)
+                                    } else {
+                                        None
+                                    },
                                     speed_bps: 0,
                                     eta_seconds: None,
                                     segments_done: 0,
@@ -805,6 +841,7 @@ async fn main() -> Result<()> {
                 config.custom_headers = headers;
 
                 let handle = spawn_download(config, pool.clone());
+                let cancel = handle.cancellation_token();
                 let mut rx = handle.subscribe();
                 let source_clone = source.clone();
                 let path_display = output_path.display().to_string();
@@ -819,7 +856,7 @@ async fn main() -> Result<()> {
                 ));
 
                 let tx = writer_tx.clone();
-                tokio::spawn(async move {
+                download_tasks.spawn(async move {
                     while rx.changed().await.is_ok() {
                         let snapshot = rx.borrow().clone();
                         let _ = tx.send(progress_event(
@@ -839,7 +876,13 @@ async fn main() -> Result<()> {
                 });
 
                 let tx = writer_tx.clone();
-                tokio::spawn(async move {
+                let mut bridge_shutdown = shutdown_rx.clone();
+                download_tasks.spawn(async move {
+                    let cancellation_task = tokio::spawn(async move {
+                        if bridge_shutdown.changed().await.is_err() || *bridge_shutdown.borrow() {
+                            cancel.cancel();
+                        }
+                    });
                     match handle.wait().await {
                         Ok(()) => {}
                         Err(err) => {
@@ -859,9 +902,29 @@ async fn main() -> Result<()> {
                             });
                         }
                     }
+                    cancellation_task.abort();
                 });
             }
         }
+    }
+
+    // Do not let the Tokio runtime tear active jobs down before they have
+    // persisted their paused state. Bound the grace period so a stuck network
+    // operation cannot keep the native host alive indefinitely.
+    let _ = shutdown_tx.send(true);
+    if timeout(BRIDGE_SHUTDOWN_TIMEOUT, async {
+        while let Some(result) = download_tasks.join_next().await {
+            if let Err(err) = result {
+                tracing::warn!(error = %err, "bridge download task failed during shutdown");
+            }
+        }
+    })
+    .await
+    .is_err()
+    {
+        tracing::warn!("timed out waiting for downloads to pause; aborting remaining tasks");
+        download_tasks.abort_all();
+        while download_tasks.join_next().await.is_some() {}
     }
 
     drop(writer_tx);

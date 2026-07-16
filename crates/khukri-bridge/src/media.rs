@@ -90,6 +90,7 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
     let mut args = vec![
         "--no-config".to_string(),
         "--no-playlist".to_string(),
+        "--force-overwrites".to_string(),
         "--newline".to_string(),
         "--progress".to_string(),
         "--progress-template".to_string(),
@@ -121,6 +122,11 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
         args.push("-x".to_string());
         args.push("--audio-format".to_string());
         args.push("mp3".to_string());
+    }
+
+    if let Some(runtime) = ytdlp_js_runtime() {
+        args.push("--js-runtimes".to_string());
+        args.push(runtime);
     }
 
     for (name, value) in &job.headers {
@@ -224,8 +230,60 @@ pub fn resolve_ffmpeg_binary() -> Result<PathBuf> {
         .into_iter()
         .find(|candidate| candidate.exists())
         .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
+        .or_else(|| find_executable_on_path(&["ffmpeg", "ffmpeg.exe"]))
+        .or_else(|| {
+            find_known_executable(&[
+                "/opt/homebrew/bin/ffmpeg",
+                "/usr/local/bin/ffmpeg",
+                "/usr/bin/ffmpeg",
+            ])
+        })
         .ok_or_else(|| {
-            anyhow::anyhow!("could not find bundled ffmpeg sidecar for {}", sidecar_name)
+            anyhow::anyhow!(
+                "could not find bundled or system ffmpeg executable for {}",
+                sidecar_name
+            )
+        })
+}
+
+fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|directory| {
+        names
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn find_known_executable(candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_file())
+}
+
+fn ytdlp_js_runtime() -> Option<String> {
+    if let Ok(explicit) = std::env::var("KHUKRI_YTDLP_JS_RUNTIME") {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            return Some(explicit.to_string());
+        }
+    }
+
+    find_executable_on_path(&["deno", "deno.exe"])
+        .or_else(|| find_known_executable(&["/opt/homebrew/bin/deno", "/usr/local/bin/deno"]))
+        .map(|path| format!("deno:{}", path.display()))
+        .or_else(|| {
+            find_executable_on_path(&["node", "node.exe"])
+                .or_else(|| {
+                    find_known_executable(&[
+                        "/opt/homebrew/bin/node",
+                        "/usr/local/bin/node",
+                        "/usr/bin/node",
+                    ])
+                })
+                .map(|path| format!("node:{}", path.display()))
         })
 }
 
@@ -265,6 +323,7 @@ where
     let binary = resolve_ytdlp_binary()?;
     tracing::info!(binary = %binary.display(), url = %job.url, quality = ?job.quality, "bridge starting yt-dlp job");
     let mut command = build_ytdlp_command(&binary)?;
+    command.kill_on_drop(true);
     let mut child = command
         .args(build_arguments(&job))
         .stdout(Stdio::piped())
@@ -606,6 +665,7 @@ mod tests {
     fn quality_specific_arguments_are_built() {
         let audio_args = build_arguments(&sample_job(MediaQuality::AudioOnly));
         assert!(audio_args.contains(&"--no-playlist".to_string()));
+        assert!(audio_args.contains(&"--force-overwrites".to_string()));
         assert!(audio_args.windows(2).any(|part| part[0] == "--paths"
             && part[1].starts_with("home:")
             && part[1].contains("downloads")));

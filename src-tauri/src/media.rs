@@ -129,19 +129,56 @@ pub fn spawn_media_download(job: MediaJob) -> MediaDownloadHandle {
     let cancel = CancellationToken::new();
     let child = Arc::new(Mutex::new(None));
     let state = Arc::new(Mutex::new(MediaRunState::default()));
-    tokio::spawn(run_media_download(
-        job.clone(),
-        tx,
-        cancel.clone(),
-        child.clone(),
-        state.clone(),
-    ));
+    let task_state = state.clone();
+    let task_tx = tx.clone();
+    let task_cancel = cancel.clone();
+    let task_child = child.clone();
+    tokio::spawn(async move {
+        if let Err(error) = run_media_download(
+            job,
+            task_tx.clone(),
+            task_cancel,
+            task_child,
+            task_state.clone(),
+        )
+        .await
+        {
+            publish_unhandled_media_failure(&task_tx, &task_state, error).await;
+        }
+    });
 
     MediaDownloadHandle {
         cancel,
         progress: rx,
         child,
         state,
+    }
+}
+
+async fn publish_unhandled_media_failure(
+    tx: &watch::Sender<DownloadProgress>,
+    state: &Arc<Mutex<MediaRunState>>,
+    error: String,
+) {
+    // Store the reason before publishing the terminal status so the queue
+    // watcher cannot observe `failed` and race ahead with a generic message.
+    {
+        let mut run_state = state.lock().await;
+        if run_state.failure_reason.is_none() {
+            run_state.failure_reason = Some(error);
+        }
+    }
+
+    let current_status = tx.borrow().status;
+    if !matches!(
+        current_status,
+        DownloadStatus::Paused | DownloadStatus::Failed
+    ) {
+        set_progress(tx, |progress| {
+            progress.status = DownloadStatus::Failed;
+            progress.speed_bps = 0;
+            progress.eta_seconds = None;
+        });
     }
 }
 
@@ -174,7 +211,16 @@ pub fn ffmpeg_path() -> Option<PathBuf> {
         return None;
     }
 
-    resolve_sidecar_path(platform_ffmpeg_name(), "KHUKRI_FFMPEG_BIN").ok()
+    resolve_sidecar_path(platform_ffmpeg_name(), "KHUKRI_FFMPEG_BIN")
+        .ok()
+        .or_else(|| find_executable_on_path(&["ffmpeg", "ffmpeg.exe"]))
+        .or_else(|| {
+            find_known_executable(&[
+                "/opt/homebrew/bin/ffmpeg",
+                "/usr/local/bin/ffmpeg",
+                "/usr/bin/ffmpeg",
+            ])
+        })
 }
 
 pub async fn log_ffmpeg_version() {
@@ -534,6 +580,7 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
     let mut args = vec![
         "--no-config".to_string(),
         "--no-playlist".to_string(),
+        "--force-overwrites".to_string(),
         "--newline".to_string(),
         "--progress".to_string(),
         "--progress-template".to_string(),
@@ -567,6 +614,11 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
         args.push("mp3".to_string());
     }
 
+    if let Some(runtime) = ytdlp_js_runtime() {
+        args.push("--js-runtimes".to_string());
+        args.push(runtime);
+    }
+
     for (name, value) in &job.headers {
         args.push("--add-header".to_string());
         args.push(format!("{name}:{value}"));
@@ -574,6 +626,47 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
 
     args.push(job.url.clone());
     args
+}
+
+fn ytdlp_js_runtime() -> Option<String> {
+    if let Ok(explicit) = std::env::var("KHUKRI_YTDLP_JS_RUNTIME") {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            return Some(explicit.to_string());
+        }
+    }
+
+    find_executable_on_path(&["deno", "deno.exe"])
+        .or_else(|| find_known_executable(&["/opt/homebrew/bin/deno", "/usr/local/bin/deno"]))
+        .map(|path| format!("deno:{}", path.display()))
+        .or_else(|| {
+            find_executable_on_path(&["node", "node.exe"])
+                .or_else(|| {
+                    find_known_executable(&[
+                        "/opt/homebrew/bin/node",
+                        "/usr/local/bin/node",
+                        "/usr/bin/node",
+                    ])
+                })
+                .map(|path| format!("node:{}", path.display()))
+        })
+}
+
+fn find_executable_on_path(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|directory| {
+        names
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn find_known_executable(candidates: &[&str]) -> Option<PathBuf> {
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_file())
 }
 
 fn output_template(output_path: &Path) -> String {
@@ -632,7 +725,8 @@ fn parse_progress_line(line: &str) -> Option<ParsedProgress> {
     Some(ParsedProgress {
         phase: raw.status,
         bytes_done: parse_u64_like(raw.downloaded_bytes).unwrap_or(0),
-        total_bytes: parse_u64_like(raw.total_bytes).or_else(|| parse_u64_like(raw.total_bytes_estimate)),
+        total_bytes: parse_u64_like(raw.total_bytes)
+            .or_else(|| parse_u64_like(raw.total_bytes_estimate)),
         speed_bps: parse_u64_like(raw.speed).unwrap_or(0),
         eta_seconds: parse_u64_like(raw.eta),
     })
@@ -752,8 +846,29 @@ fn platform_ffmpeg_name() -> &'static str {
     }
 }
 
-pub fn should_use_ytdlp(source: Option<&str>, quality: Option<&str>) -> bool {
-    quality.is_some() || matches!(source, Some("blade") | Some("stream"))
+pub fn should_use_ytdlp(source: Option<&str>, quality: Option<&str>, url: &str) -> bool {
+    quality.is_some() || matches!(source, Some("blade") | Some("stream")) || is_youtube_url(url)
+}
+
+fn is_youtube_url(url: &str) -> bool {
+    let Some((_, remainder)) = url.trim().split_once("://") else {
+        return false;
+    };
+    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_with_port = authority.rsplit('@').next().unwrap_or_default();
+    let host = host_with_port
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+
+    host == "youtu.be"
+        || host.ends_with(".youtu.be")
+        || host == "youtube.com"
+        || host.ends_with(".youtube.com")
+        || host == "youtube-nocookie.com"
+        || host.ends_with(".youtube-nocookie.com")
 }
 
 #[cfg(test)]
@@ -773,9 +888,62 @@ mod tests {
 
     #[test]
     fn detects_media_request() {
-        assert!(should_use_ytdlp(Some("stream"), None));
-        assert!(should_use_ytdlp(None, Some("720p")));
-        assert!(!should_use_ytdlp(Some("browser"), None));
+        assert!(should_use_ytdlp(
+            Some("stream"),
+            None,
+            "https://example.com/video"
+        ));
+        assert!(should_use_ytdlp(
+            None,
+            Some("720p"),
+            "https://example.com/video"
+        ));
+        assert!(!should_use_ytdlp(
+            Some("browser"),
+            None,
+            "https://example.com/file.zip"
+        ));
+    }
+
+    #[test]
+    fn youtube_urls_always_use_ytdlp() {
+        for url in [
+            "https://www.youtube.com/watch?v=abc",
+            "https://m.youtube.com/shorts/abc",
+            "https://youtu.be/abc",
+            "https://www.youtube-nocookie.com/embed/abc",
+        ] {
+            assert!(should_use_ytdlp(None, None, url), "URL: {url}");
+        }
+
+        assert!(!should_use_ytdlp(
+            None,
+            None,
+            "https://youtube.com.evil.example/watch?v=abc"
+        ));
+    }
+
+    #[tokio::test]
+    async fn early_media_errors_are_published_as_failed() {
+        let (tx, rx) = watch::channel(DownloadProgress {
+            id: "media-test".to_string(),
+            status: DownloadStatus::Queued,
+            bytes_done: 0,
+            total_bytes: None,
+            speed_bps: 0,
+            eta_seconds: None,
+            segments_done: 0,
+            segments_total: None,
+        });
+        let state = Arc::new(Mutex::new(MediaRunState::default()));
+
+        publish_unhandled_media_failure(&tx, &state, "yt-dlp missing".to_string()).await;
+
+        assert_eq!(rx.borrow().status, DownloadStatus::Failed);
+        assert_eq!(
+            state.lock().await.failure_reason.as_deref(),
+            Some("yt-dlp missing")
+        );
     }
 
     #[test]
@@ -809,6 +977,7 @@ mod tests {
         );
 
         assert!(args.contains(&"--no-playlist".to_string()));
+        assert!(args.contains(&"--force-overwrites".to_string()));
         assert!(args.windows(2).any(|part| part[0] == "--paths"
             && part[1].starts_with("home:")
             && part[1].contains("downloads")));

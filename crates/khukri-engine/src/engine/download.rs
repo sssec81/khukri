@@ -90,6 +90,15 @@ impl DownloadHandle {
         self.cancel.cancel();
     }
 
+    /// Returns a clone of the cooperative cancellation token.
+    ///
+    /// This lets lifecycle owners (such as the Native Messaging bridge) stop a
+    /// download when their controlling IPC connection disappears, without
+    /// taking ownership of the handle needed to await completion.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     pub fn subscribe(&self) -> watch::Receiver<DownloadProgress> {
         self.progress.clone()
     }
@@ -304,31 +313,42 @@ async fn start_download_internal(
     // ── 1. HEAD: probe Content-Length + Accept-Ranges (with retry) ──────────
     // Status check is inside the closure so 5xx triggers a retry,
     // while permanent errors (403, 404) surface immediately.
-    let head = match with_retry(&config.retry, || {
-        let client = client.clone();
-        let custom_headers = custom_headers.clone();
-        let url = config.url.clone();
-        async move {
-            let resp = client
-                .head(&url)
-                .headers(custom_headers.as_ref().clone())
-                .send()
-                .await
-                .map_err(KhukriError::Http)?;
-            let s = resp.status().as_u16();
-            if is_permanent_failure(s) {
-                return Err(KhukriError::PermanentError { status: s, url });
+    let head_result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(KhukriError::Cancelled),
+        result = with_retry(&config.retry, || {
+            let client = client.clone();
+            let custom_headers = custom_headers.clone();
+            let url = config.url.clone();
+            async move {
+                let resp = client
+                    .head(&url)
+                    .headers(custom_headers.as_ref().clone())
+                    .send()
+                    .await
+                    .map_err(KhukriError::Http)?;
+                let s = resp.status().as_u16();
+                if is_permanent_failure(s) {
+                    return Err(KhukriError::PermanentError { status: s, url });
+                }
+                if s >= 500 {
+                    // Transient server error — retryable.
+                    return Err(KhukriError::Http(resp.error_for_status().unwrap_err()));
+                }
+                Ok(resp)
             }
-            if s >= 500 {
-                // Transient server error — retryable.
-                return Err(KhukriError::Http(resp.error_for_status().unwrap_err()));
-            }
-            Ok(resp)
-        }
-    })
-    .await
-    {
+        }) => result,
+    };
+
+    let head = match head_result {
         Ok(head) => head,
+        Err(KhukriError::Cancelled) => {
+            db::set_download_status(&pool, &download_id, "paused").await?;
+            if let Some(p) = &progress {
+                p.set_status(DownloadStatus::Paused);
+            }
+            return Err(KhukriError::Cancelled);
+        }
         Err(e) => {
             db::set_download_failed(&pool, &download_id, &e.to_string()).await?;
             if let Some(p) = &progress {

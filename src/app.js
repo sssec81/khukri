@@ -23,7 +23,9 @@ const FALLBACK_STRINGS = {
   "quality.720p": "720p",
   "quality.audioOnly": "Audio only",
   "actions.start": "Start Download",
+  "actions.starting": "Starting...",
   "actions.refresh": "Refresh Queue",
+  "actions.refreshing": "Refreshing...",
   "actions.new_download": "New Download",
   "actions.remove": "Remove",
   "downloads.title": "Current queue",
@@ -355,8 +357,8 @@ function statusLabel(status) {
 function qualityLabel(value) {
   const labels = {
     best: "Best",
-    "1080p": "1080p",
-    "720p": "720p",
+    "1080p": "Up to 1080p",
+    "720p": "Up to 720p",
     "audio-only": "Audio"
   };
   return labels[value] || "Direct";
@@ -538,14 +540,16 @@ function renderDownloadCard(item, index, strings) {
     const sizeText = item.totalBytes ? formatBytes(item.totalBytes) : "";
     actions = ``;
     extra = `
-      <div class="queue-card-chips">
-        ${renderMetaChipsInner(item, liveStatus)}
-        ${sizeText ? `<span class="queue-chip">${htmlEscape(sizeText)}</span>` : ""}
-        <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
-      </div>
-      <div class="queue-card-actions">
-        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="open" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionOpen"])}</button>
-        <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
+      <div class="queue-card-complete-meta">
+        <div class="queue-card-chips">
+          ${renderMetaChipsInner(item, liveStatus)}
+          ${sizeText ? `<span class="queue-chip">${htmlEscape(sizeText)}</span>` : ""}
+          <span class="pill pill--${htmlEscape(liveStatus)}">${htmlEscape(pillLabel)}</span>
+        </div>
+        <div class="queue-card-actions">
+          <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="open" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["downloads.actionOpen"])}</button>
+          <button class="queue-btn queue-btn-secondary row-action" type="button" data-action="remove" data-id="${escapedId}"${pendingAttrs}>${htmlEscape(strings["actions.remove"])}</button>
+        </div>
       </div>
     `;
   }
@@ -675,21 +679,44 @@ function renderQueueSync(items) {
 }
 
 
-function showView(view) {
+function showView(view, { focus = false } = {}) {
   currentView = view;
   document.querySelectorAll("[data-view]").forEach((section) => {
     section.hidden = section.dataset.view !== view;
   });
 
   if (view !== "downloads") {
-    const composer = document.getElementById("downloadsComposer");
-    if (composer) {
-      composer.hidden = true;
-    }
+    setComposerOpen(false);
   }
 
-  document.getElementById("navDownloads").classList.toggle("nav-item-active", view === "downloads");
-  document.getElementById("navSettings").classList.toggle("nav-item-active", view === "settings");
+  const downloadsNav = document.getElementById("navDownloads");
+  const settingsNav = document.getElementById("navSettings");
+  downloadsNav.classList.toggle("nav-item-active", view === "downloads");
+  settingsNav.classList.toggle("nav-item-active", view === "settings");
+  if (view === "downloads") {
+    downloadsNav.setAttribute("aria-current", "page");
+    settingsNav.removeAttribute("aria-current");
+  } else {
+    settingsNav.setAttribute("aria-current", "page");
+    downloadsNav.removeAttribute("aria-current");
+  }
+
+  if (focus) {
+    document.querySelector(`[data-view="${view}"] .view-title`)?.focus({ preventScroll: true });
+  }
+}
+
+function setComposerOpen(open, { returnFocus = false } = {}) {
+  const composer = document.getElementById("downloadsComposer");
+  const newDownloadButton = document.getElementById("newDownload");
+  composer.hidden = !open;
+  newDownloadButton.setAttribute("aria-expanded", String(open));
+
+  if (open) {
+    document.getElementById("downloadUrl")?.focus();
+  } else if (returnFocus) {
+    newDownloadButton.focus();
+  }
 }
 
 function resolvedTheme(themeMode) {
@@ -828,6 +855,15 @@ async function refreshQueue(strings, options = {}) {
 
   queueRefreshInFlight = true;
   const statusNode = document.getElementById("formStatus");
+  const refreshButton = document.getElementById("refreshQueue");
+  const refreshLabel = refreshButton?.querySelector("span");
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.setAttribute("aria-busy", "true");
+  }
+  if (refreshLabel) {
+    refreshLabel.textContent = strings["actions.refreshing"];
+  }
   if (!options.preserveStatus) {
     statusNode.textContent = strings["status.loading"];
   }
@@ -842,6 +878,13 @@ async function refreshQueue(strings, options = {}) {
     statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
   } finally {
     queueRefreshInFlight = false;
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.removeAttribute("aria-busy");
+    }
+    if (refreshLabel) {
+      refreshLabel.textContent = strings["actions.refresh"];
+    }
   }
 }
 
@@ -984,6 +1027,7 @@ async function main() {
   const onboardingButton = document.getElementById("acknowledgeOnboarding");
   const checkYtdlpButton = document.getElementById("checkYtdlpNow");
   const saveSettingsButton = document.getElementById("saveSettingsButton");
+  const startDownloadButton = document.getElementById("startDownloadButton");
 
   showView("downloads");
   registerThemeWatcher();
@@ -993,17 +1037,24 @@ async function main() {
   applySettings(currentSettings);
   document.body.classList.add("app-ready");
 
-  const composer = document.getElementById("downloadsComposer");
-
   newDownloadButton.addEventListener("click", () => {
-    composer.hidden = !composer.hidden;
-    if (!composer.hidden) {
-      document.getElementById("downloadUrl").focus();
-    }
+    const composer = document.getElementById("downloadsComposer");
+    setComposerOpen(composer.hidden);
+  });
+
+  document.getElementById("emptyNewDownload").addEventListener("click", () => {
+    setComposerOpen(true);
   });
 
   document.getElementById("composerClose").addEventListener("click", () => {
-    composer.hidden = true;
+    setComposerOpen(false, { returnFocus: true });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !document.getElementById("downloadsComposer").hidden) {
+      event.preventDefault();
+      setComposerOpen(false, { returnFocus: true });
+    }
   });
 
   onboardingButton?.addEventListener("click", () => {
@@ -1040,15 +1091,24 @@ async function main() {
     };
 
     try {
+      startDownloadButton.disabled = true;
+      startDownloadButton.setAttribute("aria-busy", "true");
+      startDownloadButton.textContent = strings["actions.starting"];
+      document.getElementById("downloadsComposer").setAttribute("aria-busy", "true");
       statusNode.textContent = strings["status.loading"];
       await invoke("start_download", { request });
       form.reset();
       syncDownloadDefaults(currentSettings);
-      composer.hidden = true;
+      setComposerOpen(false);
       await refreshQueue(strings, { preserveStatus: true });
       statusNode.textContent = strings["status.started"];
     } catch (error) {
       statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    } finally {
+      startDownloadButton.disabled = false;
+      startDownloadButton.removeAttribute("aria-busy");
+      startDownloadButton.textContent = strings["actions.start"];
+      document.getElementById("downloadsComposer").removeAttribute("aria-busy");
     }
   });
 
@@ -1116,11 +1176,11 @@ async function main() {
   });
 
   document.getElementById("navDownloads").addEventListener("click", () => {
-    showView("downloads");
+    showView("downloads", { focus: true });
   });
 
   document.getElementById("navSettings").addEventListener("click", () => {
-    showView("settings");
+    showView("settings", { focus: true });
   });
 
   downloadsList.addEventListener("click", (event) => {

@@ -3,10 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..700&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <title>Khukri</title>
   <script>
     (() => {
@@ -63,6 +59,7 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#mainContent">Skip to downloads</a>
   <div id="bootSplash" role="status" aria-live="polite">Loading Khukri...</div>
   <div id="mediaOnboarding" class="onboarding-backdrop" hidden>
     <section class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" aria-describedby="onboardingBody">
@@ -76,22 +73,22 @@
   </div>
   <div class="shell">
 
-    <aside class="sidebar">
+    <aside class="sidebar" aria-label="Primary navigation">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
           <img class="brand-icon" src="./assets/khukri-icon.png" alt="">
         </div>
         <h1 class="brand-wordmark">Khukri</h1>
       </div>
-      <nav class="nav">
-        <button id="navDownloads" class="nav-item nav-item-active" type="button">
+      <nav class="nav" aria-label="Main sections">
+        <button id="navDownloads" class="nav-item nav-item-active" type="button" aria-controls="downloadsView" aria-current="page">
           <svg class="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M8 2v7M5 6.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             <path d="M2 12.5h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
           <span data-i18n="nav.downloads"></span>
         </button>
-        <button id="navSettings" class="nav-item" type="button">
+        <button id="navSettings" class="nav-item" type="button" aria-controls="settingsView">
           <svg class="nav-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"/>
             <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -101,25 +98,37 @@
       </nav>
     </aside>
 
-    <main class="main">
+    <main id="mainContent" class="main" tabindex="-1">
 
       <!-- Downloads view -->
-      <div class="view" data-view="downloads">
+      <div id="downloadsView" class="view" data-view="downloads">
         <header class="view-toolbar">
-          <h2 class="view-title" data-i18n="nav.downloads"></h2>
-          <p id="formStatus" class="view-status" aria-live="polite"></p>
+          <div class="view-heading">
+            <h2 class="view-title" tabindex="-1" data-i18n="nav.downloads"></h2>
+            <p class="view-subtitle" data-i18n="downloads.copy"></p>
+          </div>
+          <p id="formStatus" class="view-status" role="status" aria-live="polite"></p>
           <div class="toolbar-actions">
-            <button id="refreshQueue" class="ghost-btn" type="button" data-i18n="actions.refresh"></button>
-            <button id="newDownload" class="primary-button" type="button" data-i18n="actions.new_download"></button>
+            <button id="refreshQueue" class="ghost-btn button-with-icon" type="button">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13 5.5A5.5 5.5 0 103.8 12M13 2v3.5H9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span data-i18n="actions.refresh"></span>
+            </button>
+            <button id="newDownload" class="primary-button button-with-icon" type="button" aria-controls="downloadsComposer" aria-expanded="false">
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <span data-i18n="actions.new_download"></span>
+            </button>
           </div>
         </header>
 
         <div class="view-body">
 
-          <section id="downloadsComposer" class="composer" hidden>
+          <section id="downloadsComposer" class="composer" aria-labelledby="composerTitle" hidden>
             <div class="composer-header">
-              <p class="composer-title" data-i18n="composer.title"></p>
-              <button id="composerClose" class="composer-close" type="button" aria-label="Close">
+              <div>
+                <h3 id="composerTitle" class="composer-title" data-i18n="composer.title"></h3>
+                <p class="composer-copy" data-i18n="composer.copy"></p>
+              </div>
+              <button id="composerClose" class="composer-close" type="button" aria-label="Close new download form">
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
                   <path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
@@ -129,7 +138,7 @@
               <div class="form-row">
                 <label class="field field-grow">
                   <span data-i18n="composer.urlLabel"></span>
-                  <input id="downloadUrl" name="downloadUrl" type="url" placeholder="https://example.com/file.zip" required>
+                  <input id="downloadUrl" name="downloadUrl" type="url" placeholder="https://example.com/file.zip" spellcheck="false" required>
                 </label>
                 <label class="field field-grow">
                   <span data-i18n="composer.outputLabel"></span>
@@ -160,7 +169,7 @@
                   <input id="throttle" name="throttle" type="number" min="0" step="1" placeholder="0">
                 </label>
                 <div class="form-submit-cell">
-                  <button class="primary-button" type="submit" data-i18n="actions.start"></button>
+                  <button id="startDownloadButton" class="primary-button" type="submit" data-i18n="actions.start"></button>
                 </div>
               </div>
             </form>
@@ -176,6 +185,10 @@
               </div>
               <p class="empty-title" data-i18n="downloads.emptyTitle"></p>
               <p class="empty-hint" data-i18n="downloads.emptyCopy"></p>
+              <button id="emptyNewDownload" class="primary-button button-with-icon" type="button" aria-controls="downloadsComposer">
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <span data-i18n="actions.new_download"></span>
+              </button>
             </div>
             <div id="downloadsList" class="downloads-list" hidden></div>
           </section>
@@ -184,9 +197,12 @@
       </div>
 
       <!-- Settings view -->
-      <div class="view view--settings" data-view="settings" hidden>
+      <div id="settingsView" class="view view--settings" data-view="settings" hidden>
         <header class="view-toolbar">
-          <h2 class="view-title" data-i18n="settings.title"></h2>
+          <div class="view-heading">
+            <h2 class="view-title" tabindex="-1" data-i18n="settings.title"></h2>
+            <p class="view-subtitle" data-i18n="settings.copy"></p>
+          </div>
           <div class="toolbar-actions">
             <p id="settingsStatus" class="view-status view-status--inline" aria-live="polite"></p>
             <button id="saveSettingsButton" class="primary-button" form="settingsForm" type="submit" data-i18n="settings.save"></button>

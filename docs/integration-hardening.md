@@ -11,9 +11,13 @@ Risk:
 - If Chrome is force-closed or the bridge crashes, downloads can keep running unexpectedly and hold file or SQLite resources.
 
 Mitigation:
-- Add a heartbeat between bridge and engine.
-- If IPC is severed for more than N seconds, cancel download tasks and persist paused state.
-- Add an integration test that kills the parent process mid-download and validates resume readiness.
+- Treat Native Messaging stdin EOF as the bridge lifecycle signal and cooperatively cancel all bridge-owned download tasks.
+- Persist interrupted engine and yt-dlp jobs as paused before the bridge exits, with a bounded shutdown grace period.
+- Configure yt-dlp child processes to terminate if their owning bridge task is dropped.
+- Add an integration test that closes the browser-facing pipe mid-download and validates paused, resume-ready state.
+
+Current status:
+- Implemented. The native protocol suite closes the browser-facing pipe during a queued download and verifies that the bridge exits with the download persisted as paused.
 
 ### 2. The Authentication Wall (Session Hand-off)
 

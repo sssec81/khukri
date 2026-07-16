@@ -288,6 +288,26 @@
         }
     }
 
+    function sendMessageWithResponse(message) {
+        if (!hasExtensionContext()) {
+            return Promise.resolve({ ok: false, error: 'The Khukri extension needs to be reloaded.' });
+        }
+        return new Promise((resolve) => {
+            try {
+                chrome.runtime.sendMessage(message, (response) => {
+                    const error = chrome.runtime?.lastError?.message;
+                    if (error) {
+                        resolve({ ok: false, error });
+                        return;
+                    }
+                    resolve(response || { ok: false, error: 'Khukri did not respond.' });
+                });
+            } catch (error) {
+                resolve({ ok: false, error: error?.message || 'Khukri did not respond.' });
+            }
+        });
+    }
+
     function ensurePromptStyle() {
         if (document.getElementById(`${PROMPT_ID}-style`)) return;
         const style = document.createElement('style');
@@ -479,6 +499,14 @@
             cursor: pointer;
             flex-shrink: 0;
         }
+        #${PROMPT_ID} .khp-error {
+            display: none;
+            margin-top: 9px;
+            color: #ff8a80;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+        #${PROMPT_ID} .khp-error[data-visible="true"] { display: block; }
         `;
         document.head.appendChild(style);
     }
@@ -538,17 +566,33 @@
                 <span>Open in Khukri</span>
               </button>
             </div>
+            <div class="khp-error" role="alert"></div>
             <label class="khp-foot"><input type="checkbox" id="khukri-prompt-remember" /><span>Always use Khukri for downloads</span></label>
           </div>
         `;
         document.documentElement.appendChild(root);
 
-        root.addEventListener('click', (event) => {
+        root.addEventListener('click', async (event) => {
             const button = event.target.closest('button[data-action]');
             if (!button) return;
             const action = button.dataset.action === 'close' ? 'dismiss' : button.dataset.action;
             const remember = Boolean(root.querySelector('#khukri-prompt-remember')?.checked);
-            safeSendMessage({
+            if (action === 'dismiss') {
+                safeSendMessage({
+                    type: 'khukri_prompt_decision',
+                    payload: { ...payload, action, remember }
+                });
+                removePrompt();
+                return;
+            }
+
+            const label = button.querySelector('span:last-child');
+            const errorNode = root.querySelector('.khp-error');
+            button.disabled = true;
+            if (label) label.textContent = 'Connecting…';
+            if (errorNode) errorNode.dataset.visible = 'false';
+
+            const response = await sendMessageWithResponse({
                 type: 'khukri_prompt_decision',
                 payload: {
                     ...payload,
@@ -561,7 +605,17 @@
                     referrer: payload.referrer
                 }
             });
-            removePrompt();
+            if (response?.ok) {
+                removePrompt();
+                return;
+            }
+
+            button.disabled = false;
+            if (label) label.textContent = 'Try again';
+            if (errorNode) {
+                errorNode.textContent = response?.error || 'Could not connect to Khukri.';
+                errorNode.dataset.visible = 'true';
+            }
         });
     }
 
