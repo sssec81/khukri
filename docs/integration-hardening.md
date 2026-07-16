@@ -45,9 +45,28 @@ Mitigation:
 - Prefer a single write path for high-frequency progress writes.
 
 Current status:
-- WAL mode is now enabled during Tauri DB bootstrap.
+- WAL mode and a busy timeout are enabled during both Tauri and bridge DB bootstrap.
+- Browser media progress writes are coalesced before persistence to reduce write pressure.
 
-### 4. Native Messaging Path Friction (Windows/Linux)
+### 4. Cross-process Progress Visibility
+
+Risk:
+- Chrome receives native-messaging progress events, but the desktop app runs in
+  a separate process and cannot subscribe to that channel.
+- If the bridge writes only the final state, the desktop bar appears frozen and
+  then jumps directly to complete.
+
+Mitigation:
+- Persist live bytes, total size, speed, and ETA on the download row.
+- Coalesce yt-dlp updates to a bounded SQLite write cadence.
+- Hydrate the desktop queue from persisted progress every 500 ms.
+- Clear transient speed and ETA values when a job becomes terminal.
+
+Current status:
+- Implemented with migration `010_add_download_progress.sql` and an integration
+  test covering live values and terminal cleanup.
+
+### 5. Native Messaging Path Friction (Windows/Linux)
 
 Risk:
 - Registration paths are absolute. If binaries move, host registration breaks silently.
@@ -55,6 +74,10 @@ Risk:
 Mitigation:
 - KHU-202 self-installer must support register/repair flows.
 - Recompute absolute path on each repair run and rewrite host manifest/registry key.
+
+Current status:
+- The macOS beta bundles the bridge and repairs Chrome registration at app startup.
+- Source development and Windows/Linux beta setup still use the registration scripts.
 
 ## Technical Blind Spots to Monitor
 

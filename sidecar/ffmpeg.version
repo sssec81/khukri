@@ -1,15 +1,16 @@
 # FFmpeg sidecar version and checksums
-# Fetched: 2026-05-03
+# Fetched: 2026-07-17
 # Run sidecar/fetch-ffmpeg.sh to reproduce these binaries locally
 
 windows_x64_source=https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
 linux_x64_source=https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz
-macos_source=https://evermeet.cx/ffmpeg/getrelease/zip
+macos_source=https://evermeet.cx/ffmpeg/ffmpeg-8.1.2.zip
+macos_archive_sha256=e91df72a1ee7c26606f90dd2dd4dcccc6a75140ff9ea6fdd50faae828b82ba69
 
 ffmpeg-x86_64-pc-windows-msvc.exe=1a65d5b0b10d8d9a81d2824a3538046a40ed3607c906b335a166add87613f705
 ffmpeg-x86_64-unknown-linux-gnu=47dcecd586d7dcc5adaaee533b891fe334873ce23ac34acb669a2dc94d3ab7b6
-ffmpeg-x86_64-apple-darwin=b68f795f7fb4528daf697f57a2b6780846a1ae762a71907e994442ad103ee88f
-ffmpeg-aarch64-apple-darwin=b68f795f7fb4528daf697f57a2b6780846a1ae762a71907e994442ad103ee88f
+ffmpeg-x86_64-apple-darwin=60725ea0467ccaf900bf294d3567c302a802dc661f03bdde6aa7ecc9ccf05c4f
+ffmpeg-aarch64-apple-darwin=60725ea0467ccaf900bf294d3567c302a802dc661f03bdde6aa7ecc9ccf05c4f
 
 # NOTE: aarch64-apple-darwin is the same Intel binary as x86_64-apple-darwin.
 # Runs via Rosetta 2 on Apple Silicon for dev/local use.

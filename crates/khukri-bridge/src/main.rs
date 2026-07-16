@@ -711,6 +711,31 @@ async fn main() -> Result<()> {
                             }
                         });
 
+                        // Chrome receives the native-messaging events below, but the desktop
+                        // app is a separate process and hydrates its queue from SQLite. Keep a
+                        // lightweight writer here so both surfaces observe the same progress.
+                        let (progress_db_tx, mut progress_db_rx) =
+                            mpsc::unbounded_channel::<media::YtDlpProgress>();
+                        let progress_pool = pool_for_media.clone();
+                        let progress_id = job.id.clone();
+                        let progress_writer = tokio::spawn(async move {
+                            while let Some(mut progress) = progress_db_rx.recv().await {
+                                while let Ok(newer) = progress_db_rx.try_recv() {
+                                    progress = newer;
+                                }
+                                let _ = db::set_download_progress(
+                                    &progress_pool,
+                                    &progress_id,
+                                    progress.bytes_done,
+                                    progress.total_bytes,
+                                    progress.speed_bps,
+                                    progress.eta_seconds,
+                                )
+                                .await;
+                                sleep(Duration::from_millis(200)).await;
+                            }
+                        });
+
                         let mut on_progress = |progress| {
                             let _ = tx.send(media_progress_event(
                                 &job.id,
@@ -718,11 +743,14 @@ async fn main() -> Result<()> {
                                 source_clone.clone(),
                                 Some(path_display.clone()),
                             ));
+                            let _ = progress_db_tx.send(progress);
                         };
 
                         let result =
                             media::run_ytdlp_with_cancel(job.clone(), &mut on_progress, cancel_rx)
                                 .await;
+                        drop(progress_db_tx);
+                        let _ = progress_writer.await;
                         cancel_task.abort();
 
                         match result {
@@ -731,10 +759,13 @@ async fn main() -> Result<()> {
                                     .map(|m| m.len())
                                     .unwrap_or(0);
                                 if final_size > 0 {
-                                    let _ = db::set_download_total_bytes(
+                                    let _ = db::set_download_progress(
                                         &pool_for_media,
                                         &job.id,
                                         final_size,
+                                        Some(final_size),
+                                        0,
+                                        None,
                                     )
                                     .await;
                                 }

@@ -2,7 +2,10 @@
 
 Khukri is a local-first download manager built with Rust and Tauri. It supports segmented HTTP downloads, pause and resume, browser handoff, and media downloads through `yt-dlp` and FFmpeg.
 
-The project is under active development. The core download path and desktop app work, but packaging and cross-platform browser setup still need more testing before a stable release.
+The project is under active development. The core download path, desktop app,
+and a free macOS beta package work. A stable public release still needs Apple
+notarization or store distribution, Chrome Web Store distribution, and broader
+Windows and Linux validation.
 
 ## Features
 
@@ -60,11 +63,25 @@ Run the test suite:
 cargo test --workspace
 ```
 
+Build a free, ad-hoc-signed macOS beta DMG and unpacked extension package:
+
+```bash
+bash sidecar/fetch-ffmpeg.sh macos
+bash scripts/build-macos-beta.sh
+```
+
+See [docs/macos-beta.md](docs/macos-beta.md) for installation and Gatekeeper
+instructions. This beta is not Apple-notarized.
+
 The app stores its state in the platform data directory. Set `KHUKRI_DATA_DIR` to use an isolated directory during development.
 
 ## Browser extension
 
-Load `extension/` as an unpacked extension from `chrome://extensions`. The native messaging host must be registered with the extension ID before browser handoff works.
+Load `extension/` as an unpacked extension from `chrome://extensions`. Its
+committed public key keeps the beta extension ID stable. Packaged macOS beta
+builds register the bundled native host automatically on app startup.
+
+For development builds, the host can still be registered manually:
 
 ```bash
 cargo build --release -p khukri-bridge
@@ -75,7 +92,10 @@ The host registration manifest is browser-specific. See [extension/README.md](ex
 
 ## Media downloads
 
-Khukri uses `yt-dlp` for extractor-backed media URLs. FFmpeg is required when a site provides video and audio as separate streams. The app checks the managed sidecar directory first, then `PATH`, followed by common installation paths on macOS and Linux.
+Khukri uses `yt-dlp` for extractor-backed media URLs. FFmpeg is required when a
+site provides video and audio as separate streams. The app checks its managed
+sidecar directory and packaged executable directory before falling back to
+`PATH` and common installation paths on macOS and Linux.
 
 Useful overrides:
 
@@ -101,11 +121,12 @@ cargo run -p khukri-engine --example download -- \
 
 ## Current limitations
 
-- native host registration is still a manual development step
+- the free macOS beta is ad-hoc signed and requires **Open Anyway** approval
 - the extension's ask-mode prompt may open as a normal tab in Chromium browsers
-- packaging, signing, and sidecar distribution are not release-ready
+- the extension must be loaded unpacked until it is distributed through the Chrome Web Store
+- the macOS FFmpeg beta sidecar is Intel-only and requires Rosetta on Apple Silicon
 - tray and shell integration need broader Windows and Linux testing
-- browser extension IDs are not yet stable for packaged releases
+- Windows and Linux installers are not part of the current beta pipeline
 
 Implementation risks and verification notes are tracked in [docs/integration-hardening.md](docs/integration-hardening.md).
 

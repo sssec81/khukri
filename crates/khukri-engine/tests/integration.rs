@@ -221,6 +221,46 @@ async fn recorded_range_handler(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+#[tokio::test]
+async fn test_download_progress_is_persisted() {
+    let pool = make_pool("persisted_progress").await;
+    db::upsert_download(
+        &pool,
+        "progress-test",
+        "https://example.com/video",
+        "/tmp/progress-test.mp4",
+        None,
+        "normal",
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+
+    db::set_download_progress(&pool, "progress-test", 4_000, Some(10_000), 2_000, Some(3))
+        .await
+        .unwrap();
+
+    let row = db::get_download(&pool, "progress-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.bytes_done, 4_000);
+    assert_eq!(row.total_bytes, Some(10_000));
+    assert_eq!(row.speed_bps, 2_000);
+    assert_eq!(row.eta_seconds, Some(3));
+
+    db::set_download_status(&pool, "progress-test", "complete")
+        .await
+        .unwrap();
+    let row = db::get_download(&pool, "progress-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.speed_bps, 0);
+    assert_eq!(row.eta_seconds, None);
+}
+
 /// 1. Segmented download — verifies the output matches the source via SHA-256.
 #[tokio::test]
 async fn test_segmented_download_sha256() {

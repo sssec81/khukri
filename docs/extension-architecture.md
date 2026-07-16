@@ -9,6 +9,7 @@ This document summarizes the current MV3 extension message flow and the boundari
 - `extension/content-script-main.js`: MAIN-world fetch/XHR observer for stream discovery.
 - `extension/blade-ui.js`: in-page YouTube blade UI and quality selection.
 - `extension/prompt.html` + `extension/prompt.js`: ask-mode prompt window.
+- `crates/khukri-bridge`: native host that owns browser-started jobs and writes their durable state into the same SQLite queue used by the desktop app.
 
 ## Message flows
 
@@ -65,6 +66,26 @@ Service-worker capture:
 - `dismissed_sites`: per-origin dismissal expirations stored in `chrome.storage.local` with a 7-day TTL
 - `khukri_prompt_<token>`: transient prompt payload stored in `chrome.storage.session`
 - `khukri_retry_queue`: transient retry queue stored in `chrome.storage.session`
+
+## Native host identity and installation
+
+The beta extension includes a public manifest key and therefore has the stable
+ID `hlingdbecfefhglkbballggindegcmik`. The native host manifest permits only
+that origin. A packaged desktop app looks for its bundled `khukri-bridge`
+sidecar during startup and runs `--repair`, which writes a manifest containing
+the bridge's current absolute path. This also repairs registration when the app
+is moved.
+
+Source-tree development can continue using `extension/register-host.sh` or
+`extension/register-host.ps1` with the extension ID shown by Chrome.
+
+## Desktop progress synchronization
+
+Browser native-messaging events are visible to Chrome, not directly to the
+separate Tauri process. The bridge therefore persists `bytes_done`,
+`total_bytes`, `speed_bps`, and `eta_seconds` into SQLite while yt-dlp runs.
+The desktop queue hydrates progress from those fields on its 500 ms refresh,
+so browser-started media jobs no longer jump directly from active to complete.
 
 ## Known limitation
 

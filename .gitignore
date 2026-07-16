@@ -56,3 +56,5 @@ tmp/
 
 # FFmpeg sidecars — too large for git, fetch via sidecar/fetch-ffmpeg.sh
 sidecar/ffmpeg-*
+sidecar/khukri-bridge-*
+artifacts/

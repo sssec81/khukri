@@ -12,18 +12,22 @@ Intercepts browser downloads and hands them off to the Khukri Native Messaging b
 
 ## Development
 - Load this folder as an unpacked extension in Chrome
-- Requires the Khukri Native Messaging host to be registered as `com.khukri.host`
+- The committed public key gives unpacked beta builds the stable extension ID `hlingdbecfefhglkbballggindegcmik`
+- Packaged macOS beta builds register `com.khukri.host` automatically when Khukri starts
+- Source-tree development builds can use `register-host.sh` or `register-host.ps1`
 - For YouTube and similar SPAs, the pill overlay is re-injected after navigation changes
 - Blade dismissals now persist in `chrome.storage.local` with a 7-day TTL per origin
 - Current stable interception modes are `auto` and the current `ask` prompt flow
 - If you see `Extension context invalidated` after reloads, close stale tabs and test from a fresh tab/session
 
 ## UI/UX Highlights
-- Pill overlay uses Gurkha Green, Tiger Amber, glassmorphism, and an IDM-style player-adjacent layout
+- Pill and prompt share the desktop app's warm-charcoal and indigo visual system
+- Green is reserved for ready, successful, and completed states
 - Appears after a 1.5 second delay without shifting page layout
 - Dismisses per-origin using `chrome.storage.local` with a 7-day TTL
 - Blade exposes a hover quality picker with per-origin persistence in `chrome.storage.local`
 - Blade clicks queue a native download through the service worker with the selected media quality
+- Opening the ask-mode prompt suppresses the blade pill so the two surfaces do not overlap
 
 ## Sprint 2 - KHU-201-KHU-205 Acceptance Criteria
 - [x] `manifest.json` targets MV3 with correct permissions

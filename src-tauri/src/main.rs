@@ -36,6 +36,7 @@ const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const TASK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 const TASK_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const BETA_EXTENSION_ORIGIN: &str = "chrome-extension://hlingdbecfefhglkbballggindegcmik/";
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +60,9 @@ struct DownloadListItem {
     file_path: String,
     file_exists: bool,
     total_bytes: Option<i64>,
+    bytes_done: i64,
+    speed_bps: i64,
+    eta_seconds: Option<i64>,
     status: String,
     priority: String,
     throttle_bytes_per_sec: Option<i64>,
@@ -309,6 +313,53 @@ fn output_file_exists(file_path: &str) -> bool {
     Path::new(file_path).is_file()
 }
 
+fn register_bundled_native_host() -> Result<(), String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve Khukri executable: {error}"))?;
+    let directory = executable
+        .parent()
+        .ok_or_else(|| "Khukri executable has no parent directory".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    let names = [
+        "khukri-bridge.exe",
+        "khukri-bridge-x86_64-pc-windows-msvc.exe",
+    ];
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let names = ["khukri-bridge", "khukri-bridge-aarch64-apple-darwin"];
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let names = ["khukri-bridge", "khukri-bridge-x86_64-apple-darwin"];
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let names = ["khukri-bridge", "khukri-bridge-x86_64-unknown-linux-gnu"];
+
+    let bridge = names
+        .iter()
+        .map(|name| directory.join(name))
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            format!(
+                "bundled native bridge was not found next to {}",
+                executable.display()
+            )
+        })?;
+
+    let output = Command::new(&bridge)
+        .arg("--repair")
+        .env("KHUKRI_EXTENSION_ORIGIN", BETA_EXTENSION_ORIGIN)
+        .output()
+        .map_err(|error| format!("failed to launch {}: {error}", bridge.display()))?;
+
+    if output.status.success() {
+        tracing::info!(bridge = %bridge.display(), "native messaging host registered");
+        return Ok(());
+    }
+
+    Err(format!(
+        "native host registration failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
 fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
     let file_exists = output_file_exists(&row.file_path);
 
@@ -318,6 +369,9 @@ fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
         file_path: row.file_path,
         file_exists,
         total_bytes: row.total_bytes,
+        bytes_done: row.bytes_done,
+        speed_bps: row.speed_bps,
+        eta_seconds: row.eta_seconds,
         status: row.status,
         priority: row.priority,
         throttle_bytes_per_sec: row.throttle_bytes_per_sec,
@@ -877,6 +931,9 @@ async fn start_managed_download(
             file_path: output_path_string,
             file_exists: false,
             total_bytes: None,
+            bytes_done: 0,
+            speed_bps: 0,
+            eta_seconds: None,
             status: "queued".to_string(),
             priority: priority.as_str().to_string(),
             throttle_bytes_per_sec: request
@@ -1057,6 +1114,9 @@ async fn start_managed_media_download(
             file_path: output_path_string,
             file_exists: false,
             total_bytes: None,
+            bytes_done: 0,
+            speed_bps: 0,
+            eta_seconds: None,
             status: "active".to_string(),
             priority: priority.as_str().to_string(),
             throttle_bytes_per_sec: request
@@ -1481,6 +1541,9 @@ mod tests {
             file_path: "/tmp/file.bin".to_string(),
             file_exists: false,
             total_bytes: None,
+            bytes_done: 0,
+            speed_bps: 0,
+            eta_seconds: None,
             status: status.to_string(),
             priority: "normal".to_string(),
             throttle_bytes_per_sec: None,
@@ -1612,6 +1675,9 @@ pub fn run() {
             })
             .setup(|app| {
                 setup_tray(app)?;
+                if let Err(error) = register_bundled_native_host() {
+                    tracing::warn!(%error, "could not register bundled native messaging host");
+                }
                 tauri::async_runtime::spawn(async move {
                     log_ffmpeg_version().await;
                 });

@@ -14,6 +14,9 @@ pub struct DownloadRow {
     pub url: String,
     pub file_path: String,
     pub total_bytes: Option<i64>,
+    pub bytes_done: i64,
+    pub speed_bps: i64,
+    pub eta_seconds: Option<i64>,
     pub status: String,
     pub priority: String,
     pub throttle_bytes_per_sec: Option<i64>,
@@ -30,6 +33,9 @@ impl<'r> sqlx::FromRow<'r, SqliteRow> for DownloadRow {
             url: row.try_get("url")?,
             file_path: row.try_get("file_path")?,
             total_bytes: row.try_get("total_bytes")?,
+            bytes_done: row.try_get("bytes_done")?,
+            speed_bps: row.try_get("speed_bps")?,
+            eta_seconds: row.try_get("eta_seconds")?,
             status: row.try_get("status")?,
             priority: row.try_get("priority")?,
             throttle_bytes_per_sec: row.try_get("throttle_bytes_per_sec")?,
@@ -126,9 +132,14 @@ pub async fn upsert_download(
 pub async fn set_download_status(pool: &SqlitePool, id: &str, status: &str) -> Result<()> {
     sqlx::query(
         "UPDATE downloads
-         SET status = ?, failure_reason = CASE WHEN ? = 'failed' THEN failure_reason ELSE NULL END
+         SET status = ?,
+             failure_reason = CASE WHEN ? = 'failed' THEN failure_reason ELSE NULL END,
+             speed_bps = CASE WHEN ? = 'active' THEN speed_bps ELSE 0 END,
+             eta_seconds = CASE WHEN ? = 'active' THEN eta_seconds ELSE NULL END
          WHERE id = ?",
     )
+    .bind(status)
+    .bind(status)
     .bind(status)
     .bind(status)
     .bind(id)
@@ -178,6 +189,41 @@ pub async fn set_download_total_bytes(pool: &SqlitePool, id: &str, total_bytes: 
          WHERE id = ?",
     )
     .bind(total)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_download_progress(
+    pool: &SqlitePool,
+    id: &str,
+    bytes_done: u64,
+    total_bytes: Option<u64>,
+    speed_bps: u64,
+    eta_seconds: Option<u64>,
+) -> Result<()> {
+    #[allow(clippy::cast_possible_wrap)]
+    let bytes_done = bytes_done as i64;
+    #[allow(clippy::cast_possible_wrap)]
+    let total_bytes = total_bytes.map(|value| value as i64);
+    #[allow(clippy::cast_possible_wrap)]
+    let speed_bps = speed_bps as i64;
+    #[allow(clippy::cast_possible_wrap)]
+    let eta_seconds = eta_seconds.map(|value| value as i64);
+
+    sqlx::query(
+        "UPDATE downloads
+         SET bytes_done = ?,
+             total_bytes = COALESCE(?, total_bytes),
+             speed_bps = ?,
+             eta_seconds = ?
+         WHERE id = ?",
+    )
+    .bind(bytes_done)
+    .bind(total_bytes)
+    .bind(speed_bps)
+    .bind(eta_seconds)
     .bind(id)
     .execute(pool)
     .await?;

@@ -250,11 +250,17 @@ pub async fn log_ffmpeg_version() {
 
 fn resolve_sidecar_path(name: &str, env_name: &str) -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let candidates = [
+    let mut candidates = vec![
         app_data_dir().join("sidecar").join(name),
         cwd.join("sidecar").join(name),
         cwd.join("src-tauri").join("..").join("sidecar").join(name),
     ];
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join(name));
+            candidates.push(directory.join("sidecar").join(name));
+        }
+    }
 
     candidates
         .into_iter()

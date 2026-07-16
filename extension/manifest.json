@@ -2,6 +2,7 @@
     "manifest_version": 3,
     "name": "Khukri Download Interceptor",
     "version": "0.1.0",
+    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw5nC/xBfM1zyYAznmZZ+kQ4t69LhFPWvPwAa2SLknbXpcBY7u2+rEkzlJ+tkx6pWT+C7s+LwnbVPvkfQLLbr7FCBG31dZos0a3c7Af8Lr3G+AYWvePk5lzIOHAZElUkUoKScEIXkFQAJabsqeXeqWmGTytOWS41VW3cVm0J5LQKIoNfP5pvGPWzLY767/OqMuA14F3FpPrnnhvydSEpCaOZhgN+XA7MSjI035OoXUmDw24JzJXlND/EJnfiaS4LEP6lnsJSjxppqNrb0c+Mp7G9eJee4ksAGmHRdxn6EDYIg4AIhfSKSkyV0i+bdq4rwwVZHk5oRE3CdNB7sy92AfwIDAQAB",
     "description": "Intercepts downloads and hands off to Khukri Native Messaging bridge.",
     "permissions": [
         "downloads",

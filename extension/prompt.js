@@ -111,7 +111,11 @@ function showError(message) {
     if (!app) return;
     app.innerHTML = `
         <div class="error-state">
-            <span class="error-icon">⚠</span>
+            <span class="error-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                    <path d="M12 8v5m0 3.2v.1M10.2 4.8 3.7 16a2.1 2.1 0 0 0 1.8 3.1h13a2.1 2.1 0 0 0 1.8-3.1L13.8 4.8a2.1 2.1 0 0 0-3.6 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </span>
             <p class="error-msg">${message}</p>
             <button class="btn btn-secondary" id="closeBtn">Close</button>
         </div>
@@ -137,7 +141,7 @@ function renderPrompt(payload, token) {
     startBtn?.addEventListener('click', async () => {
         startBtn.disabled = true;
         keepBtn.disabled = true;
-        startBtn.textContent = 'Starting…';
+        startBtn.textContent = 'Opening…';
         const remember = rememberChk?.checked ?? false;
         await sendDecision(token, 'start', remember);
     });
@@ -145,7 +149,7 @@ function renderPrompt(payload, token) {
     keepBtn?.addEventListener('click', async () => {
         keepBtn.disabled = true;
         startBtn.disabled = true;
-        keepBtn.textContent = 'Keeping…';
+        keepBtn.textContent = 'Opening browser…';
         const remember = rememberChk?.checked ?? false;
         await sendDecision(token, 'keep', remember);
     });

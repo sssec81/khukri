@@ -284,7 +284,7 @@ function mergeQueueWithProgress(items) {
     const totalBytes = progress?.totalBytes ?? item.totalBytes ?? null;
     const bytesDone = (liveStatus === "complete" || liveStatus === "missing") && totalBytes != null
       ? Number(totalBytes)
-      : progress?.bytesDone ?? 0;
+      : progress?.bytesDone ?? item.bytesDone ?? 0;
     const percent = totalBytes && totalBytes > 0
       ? Math.max(0, Math.min(100, (bytesDone / totalBytes) * 100))
       : 0;
@@ -295,8 +295,8 @@ function mergeQueueWithProgress(items) {
       isCompleting: progress?.isCompleting || false,
       bytesDone,
       totalBytes,
-      speedBps: backendTerminal ? 0 : (progress?.speedBps ?? 0),
-      etaSeconds: backendTerminal ? null : (progress?.etaSeconds ?? null),
+      speedBps: backendTerminal ? 0 : (progress?.speedBps ?? item.speedBps ?? 0),
+      etaSeconds: backendTerminal ? null : (progress?.etaSeconds ?? item.etaSeconds ?? null),
       percent: liveStatus === "complete" || liveStatus === "missing" || progress?.isCompleting ? 100 : percent
     };
   });
@@ -1357,7 +1357,7 @@ async function main() {
   // Keep queue view feeling instant even if event delivery is delayed.
   queueRefreshInterval = window.setInterval(() => {
     void refreshQueue(strings, { preserveStatus: true });
-  }, 1200);
+  }, 500);
 }
 
 function showBootError(error) {

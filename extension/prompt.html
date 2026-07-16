@@ -3,233 +3,292 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Khukri — Download</title>
+    <title>Download with Khukri</title>
     <style>
-        /* ── Reset ── */
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --kh-bg: #1c1917;
+            --kh-surface: #292524;
+            --kh-surface-hi: #44403c;
+            --kh-text: #fafaf9;
+            --kh-text-soft: #d6d3d1;
+            --kh-text-muted: #a8a29e;
+            --kh-accent: #818cf8;
+            --kh-accent-hover: #a5b4fc;
+            --kh-accent-bg: rgba(99, 102, 241, 0.16);
+            --kh-danger: #f87171;
+            --kh-border: rgba(255, 255, 255, 0.09);
+            --kh-border-strong: rgba(255, 255, 255, 0.14);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            color: var(--kh-text);
+        }
 
-        /* ── Base ── */
+        *, *::before, *::after { box-sizing: border-box; }
+
         html, body {
             width: 100%;
+            min-width: 320px;
             height: 100%;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            font-size: 13px;
-            background: #1a1a1e;
-            color: #e2e2e6;
-            user-select: none;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            min-height: 300px;
+            margin: 0;
         }
 
-        /* ── Layout ── */
+        body {
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            overflow: auto;
+            background:
+                radial-gradient(circle at 78% 0%, rgba(99, 102, 241, 0.17), transparent 42%),
+                radial-gradient(circle at 14% 100%, rgba(56, 189, 248, 0.07), transparent 38%),
+                var(--kh-bg);
+            color: var(--kh-text);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        button, input { touch-action: manipulation; }
+
         #app {
-            display: flex;
-            flex-direction: column;
-            width: 100%;
-            max-width: 480px;
-            height: 100%;
-            max-height: 300px;
-            padding: 20px 22px 16px;
-            background: #1a1a1e;
+            width: min(100%, 460px);
+            padding: 20px;
+            border: 1px solid var(--kh-border);
+            border-radius: 16px;
+            background: rgba(41, 37, 36, 0.88);
+            box-shadow:
+                0 24px 70px rgba(0, 0, 0, 0.42),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(24px) saturate(150%);
+            -webkit-backdrop-filter: blur(24px) saturate(150%);
         }
 
-        /* ── Header ── */
         .header {
             display: flex;
             align-items: center;
-            gap: 10px;
-            margin-bottom: 16px;
+            gap: 12px;
+            margin-bottom: 18px;
         }
 
         .logo {
-            width: 28px;
-            height: 28px;
-            flex-shrink: 0;
+            width: 36px;
+            height: 36px;
+            flex: 0 0 auto;
+            filter: drop-shadow(0 7px 14px rgba(99, 102, 241, 0.22));
         }
 
         .header-text {
             display: flex;
             flex-direction: column;
-            gap: 1px;
+            min-width: 0;
         }
 
         .header-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: #ffffff;
-            letter-spacing: 0.02em;
+            color: var(--kh-text);
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: -0.01em;
         }
 
         .header-sub {
-            font-size: 11px;
-            color: #6b6b78;
+            color: var(--kh-text-muted);
+            font-size: 12px;
         }
 
-        /* ── File info ── */
         .file-info {
-            background: #25252b;
-            border: 1px solid #2e2e36;
-            border-radius: 8px;
-            padding: 10px 13px;
-            margin-bottom: 14px;
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            gap: 6px;
+            margin-bottom: 14px;
+            padding: 13px 14px;
+            border: 1px solid var(--kh-border);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.035);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
         }
 
         .file-name {
-            font-size: 13px;
-            font-weight: 600;
-            color: #ffffff;
-            white-space: nowrap;
             overflow: hidden;
+            color: var(--kh-text);
+            font-size: 13px;
+            font-weight: 650;
             text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
         .file-meta {
             display: flex;
-            gap: 14px;
+            gap: 8px;
+            min-width: 0;
+            color: var(--kh-text-muted);
             font-size: 11px;
-            color: #6b6b78;
         }
 
         .file-meta span {
-            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 200px;
+            white-space: nowrap;
         }
 
-        /* ── Remember row ── */
+        #filesize {
+            flex: 0 0 auto;
+            padding-right: 8px;
+            border-right: 1px solid var(--kh-border);
+            font-variant-numeric: tabular-nums;
+        }
+
+        #fileurl { flex: 1; }
+
         .remember-row {
             display: flex;
             align-items: center;
-            gap: 7px;
+            gap: 9px;
+            min-height: 36px;
             margin-bottom: 14px;
-            font-size: 11px;
-            color: #6b6b78;
+            color: var(--kh-text-muted);
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .remember-row:hover { color: var(--kh-text-soft); }
+
+        .remember-row input {
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            accent-color: var(--kh-accent);
             cursor: pointer;
         }
 
-        .remember-row input[type="checkbox"] {
-            accent-color: #e05c3a;
-            width: 13px;
-            height: 13px;
-            cursor: pointer;
-        }
-
-        /* ── Actions ── */
         .actions {
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
-            margin-top: auto;
         }
 
         .btn {
-            flex: 1;
-            height: 36px;
-            border: none;
-            border-radius: 7px;
+            min-height: 44px;
+            padding: 0 16px;
+            border: 1px solid transparent;
+            border-radius: 10px;
+            font: inherit;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
-            transition: opacity 0.15s, transform 0.1s;
-            letter-spacing: 0.01em;
+            transition: background-color 180ms ease, border-color 180ms ease,
+                        color 180ms ease, transform 140ms ease, box-shadow 180ms ease;
         }
 
-        .btn:active { transform: scale(0.97); }
-        .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+        .btn:hover:not(:disabled) { transform: translateY(-1px); }
+        .btn:active:not(:disabled) { transform: scale(0.98); }
+        .btn:disabled { opacity: 0.48; cursor: not-allowed; }
+
+        .btn:focus-visible,
+        .remember-row input:focus-visible {
+            outline: 3px solid rgba(129, 140, 248, 0.38);
+            outline-offset: 2px;
+        }
 
         .btn-primary {
-            background: #e05c3a;
-            color: #ffffff;
+            background: var(--kh-accent);
+            color: #17151f;
+            box-shadow: 0 8px 22px rgba(99, 102, 241, 0.24);
         }
-        .btn-primary:hover:not(:disabled) { opacity: 0.88; }
+
+        .btn-primary:hover:not(:disabled) { background: var(--kh-accent-hover); }
 
         .btn-secondary {
-            background: #2e2e36;
-            color: #b0b0bb;
-            border: 1px solid #3a3a44;
+            border-color: var(--kh-border-strong);
+            background: rgba(255, 255, 255, 0.055);
+            color: var(--kh-text-soft);
         }
-        .btn-secondary:hover:not(:disabled) { background: #35353e; }
 
-        /* ── Error state ── */
+        .btn-secondary:hover:not(:disabled) {
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.09);
+            color: var(--kh-text);
+        }
+
         .error-state {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100%;
-            gap: 10px;
+            min-height: 220px;
+            gap: 12px;
             text-align: center;
         }
 
         .error-icon {
-            font-size: 28px;
+            display: grid;
+            width: 40px;
+            height: 40px;
+            place-items: center;
+            border: 1px solid rgba(248, 113, 113, 0.22);
+            border-radius: 12px;
+            background: rgba(220, 38, 38, 0.14);
+            color: var(--kh-danger);
         }
+
+        .error-icon svg { width: 20px; height: 20px; }
 
         .error-msg {
+            max-width: 34ch;
+            margin: 0;
+            color: var(--kh-text-muted);
             font-size: 12px;
-            color: #6b6b78;
-            max-width: 300px;
-            line-height: 1.5;
         }
 
-        /* ── Full Tab Fallback ── */
-        /* If the browser forces the popup into a full tab, 
-           it centers nicely like a modal card. */
-        @media (min-width: 481px), (min-height: 301px) {
-            html, body {
-                background: #0f0f13;
-            }
-            #app {
-                border-radius: 12px;
-                box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
-                border: 1px solid rgba(255, 255, 255, 0.06);
+        .error-state .btn { width: min(100%, 180px); }
+
+        @media (max-width: 420px) {
+            body { padding: 12px; }
+            #app { padding: 16px; }
+            .actions { grid-template-columns: 1fr; }
+            .btn-primary { order: -1; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                transition-duration: 0.01ms !important;
             }
         }
     </style>
 </head>
 <body>
-    <div id="app">
-        <!-- Header -->
+    <main id="app">
         <div class="header">
-            <!-- Inline SVG khukuri blade icon — no external asset dependency -->
-            <svg class="logo" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="28" height="28" rx="7" fill="#25252b"/>
-                <path d="M6 20 L18 8 L22 10 L12 22 Z" fill="#e05c3a" opacity="0.9"/>
-                <path d="M18 8 L22 10 L21 11 L17 9 Z" fill="#ff8060"/>
-                <rect x="5" y="19" width="8" height="2.5" rx="1" fill="#3a3a44"/>
+            <svg class="logo" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect width="36" height="36" rx="10" fill="#292524"/>
+                <rect x="0.5" y="0.5" width="35" height="35" rx="9.5" stroke="white" stroke-opacity="0.12"/>
+                <path d="M8 25.5 23 9.5l5 2.8L14 28Z" fill="#818CF8"/>
+                <path d="m23 9.5 5 2.8-1.6 1.2-4.6-2.6Z" fill="#A5B4FC"/>
+                <rect x="7" y="24.5" width="9" height="3" rx="1.5" fill="#10B981"/>
             </svg>
             <div class="header-text">
-                <span class="header-title">Khukri Download Manager</span>
-                <span class="header-sub">Where do you want to download this file?</span>
+                <span class="header-title">Download with Khukri</span>
+                <span class="header-sub">Choose how to handle this file</span>
             </div>
         </div>
 
-        <!-- File info -->
-        <div class="file-info">
+        <section class="file-info" aria-label="Download details">
             <div class="file-name" id="filename">Loading…</div>
             <div class="file-meta">
                 <span id="filesize">—</span>
                 <span id="fileurl" title="">—</span>
             </div>
-        </div>
+        </section>
 
-        <!-- Remember preference -->
         <label class="remember-row">
             <input type="checkbox" id="rememberChk" />
-            Remember my choice for this session
+            Remember this choice
         </label>
 
-        <!-- Buttons -->
         <div class="actions">
-            <button class="btn btn-primary" id="startBtn">Start in Khukri</button>
-            <button class="btn btn-secondary" id="keepBtn">Keep in Browser</button>
+            <button class="btn btn-primary" id="startBtn">Open in Khukri</button>
+            <button class="btn btn-secondary" id="keepBtn">Use Browser</button>
         </div>
-    </div>
+    </main>
 
     <script src="prompt.js"></script>
 </body>
