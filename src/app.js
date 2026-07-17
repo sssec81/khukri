@@ -14,6 +14,10 @@ const FALLBACK_STRINGS = {
   "composer.priorityLabel": "Priority",
   "composer.qualityLabel": "Mode",
   "composer.throttleLabel": "Throttle bytes/sec",
+  "composer.browse": "Browse",
+  "composer.advanced": "Advanced options",
+  "composer.unlimited": "Unlimited",
+  "composer.footerHint": "The download starts immediately and stays in your queue.",
   "priority.high": "High",
   "priority.normal": "Normal",
   "priority.low": "Low",
@@ -24,6 +28,7 @@ const FALLBACK_STRINGS = {
   "quality.audioOnly": "Audio only",
   "actions.start": "Start Download",
   "actions.starting": "Starting...",
+  "actions.cancel": "Cancel",
   "actions.refresh": "Refresh Queue",
   "actions.refreshing": "Refreshing...",
   "actions.new_download": "New Download",
@@ -61,6 +66,9 @@ const FALLBACK_STRINGS = {
   "settings.general.concurrentLabel": "Max concurrent downloads",
   "settings.general.concurrentHint": "Choose how many downloads can run at the same time.",
   "settings.general.ytdlpAutoUpdateLabel": "Automatically check for yt-dlp updates",
+  "settings.general.browserSessionLabel": "Browser session for protected media",
+  "settings.general.browserSessionOff": "Off (recommended unless needed)",
+  "settings.general.browserSessionHint": "Optional. Lets yt-dlp read the selected browser's local cookies for sites that require sign-in. Cookie values never enter Khukri's UI, logs, extension, or database.",
   "settings.general.ytdlpActionsLabel": "yt-dlp",
   "settings.general.ytdlpCheckNow": "Check now",
   "settings.performance.title": "Performance",
@@ -152,6 +160,10 @@ function applyStrings(strings) {
     const key = node.getAttribute("data-i18n");
     node.textContent = strings[key] || FALLBACK_STRINGS[key] || key;
   });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
+    const key = node.getAttribute("data-i18n-placeholder");
+    node.placeholder = strings[key] || FALLBACK_STRINGS[key] || key;
+  });
 }
 
 function errorText(error) {
@@ -174,10 +186,6 @@ function invoke(command, payload = {}) {
     return Promise.reject(new Error("Tauri invoke API is unavailable."));
   }
   return api.invoke(command, payload);
-}
-
-function getCurrentWindowHandle() {
-  return window.__TAURI__?.window?.getCurrentWindow?.() ?? null;
 }
 
 function formatBytes(value) {
@@ -434,7 +442,7 @@ function summarizeFailure(item) {
   if (/sign in to confirm you('|’)re not a bot|cookies-from-browser|authentication/i.test(raw)) {
     return {
       title: "Sign-in required",
-      body: "YouTube challenged this request. Open the video in your browser, make sure playback works there, then retry in Khukri.",
+      body: "YouTube challenged this request. In Settings, select your signed-in browser under Browser session, save, then retry.",
       detail: raw
     };
   }
@@ -715,6 +723,7 @@ function setComposerOpen(open, { returnFocus = false } = {}) {
   if (open) {
     document.getElementById("downloadUrl")?.focus();
   } else if (returnFocus) {
+    composer.querySelector(".composer-advanced")?.removeAttribute("open");
     newDownloadButton.focus();
   }
 }
@@ -748,6 +757,7 @@ function populateSettingsForm(settings) {
   document.getElementById("settingsDefaultPath").value = settings.general.defaultDownloadPath || "";
   document.getElementById("settingsMaxConcurrent").value = String(settings.general.maxConcurrent ?? 3);
   document.getElementById("settingsYtdlpAutoUpdate").checked = settings.ytdlp_auto_update !== false;
+  document.getElementById("settingsBrowserSession").value = settings.browser_session || "";
   document.getElementById("settingsThreadOverride").value = settings.performance.threadOverride ?? "";
   document.getElementById("settingsBandwidthCap").value = settings.performance.bandwidthCap ?? "";
   document.getElementById("settingsSchedulerEnabled").checked = Boolean(settings.scheduler.enabled);
@@ -774,7 +784,9 @@ function toggleSettingsDependencies() {
   const proxyEnabled = document.getElementById("settingsProxyEnabled").checked;
   document.getElementById("settingsSchedulerStart").disabled = !schedulerEnabled;
   document.getElementById("settingsSchedulerEnd").disabled = !schedulerEnabled;
-  document.getElementById("settingsProxyUrl").disabled = !proxyEnabled;
+  const proxyUrl = document.getElementById("settingsProxyUrl");
+  proxyUrl.disabled = !proxyEnabled;
+  document.getElementById("settingsProxyUrlField")?.classList.toggle("field--disabled", !proxyEnabled);
 }
 
 function renderSettingsStatus() {
@@ -829,6 +841,7 @@ function collectSettingsForm() {
     appearance: {
       theme: document.getElementById("settingsTheme").value
     },
+    browser_session: document.getElementById("settingsBrowserSession").value || null,
     onboarding_complete: onboardingComplete(currentSettings),
     ytdlp_auto_update: document.getElementById("settingsYtdlpAutoUpdate").checked,
     ytdlp_last_check: currentSettings?.ytdlp_last_check ?? null,
@@ -982,18 +995,6 @@ async function checkYtdlpNow() {
   await invoke("check_ytdlp_updates_now");
 }
 
-async function registerCloseToTray() {
-  const currentWindow = getCurrentWindowHandle();
-  if (!currentWindow?.onCloseRequested) {
-    return;
-  }
-
-  await currentWindow.onCloseRequested(async (event) => {
-    event.preventDefault();
-    await currentWindow.hide();
-  });
-}
-
 function registerThemeWatcher() {
   const media = window.matchMedia?.("(prefers-color-scheme: dark)");
   if (!media?.addEventListener) {
@@ -1031,8 +1032,6 @@ async function main() {
 
   showView("downloads");
   registerThemeWatcher();
-  await registerCloseToTray();
-
   currentSettings = await invoke("get_settings");
   applySettings(currentSettings);
   document.body.classList.add("app-ready");
@@ -1047,6 +1046,10 @@ async function main() {
   });
 
   document.getElementById("composerClose").addEventListener("click", () => {
+    setComposerOpen(false, { returnFocus: true });
+  });
+
+  document.getElementById("composerCancel").addEventListener("click", () => {
     setComposerOpen(false, { returnFocus: true });
   });
 
@@ -1093,7 +1096,7 @@ async function main() {
     try {
       startDownloadButton.disabled = true;
       startDownloadButton.setAttribute("aria-busy", "true");
-      startDownloadButton.textContent = strings["actions.starting"];
+      startDownloadButton.querySelector("span").textContent = strings["actions.starting"];
       document.getElementById("downloadsComposer").setAttribute("aria-busy", "true");
       statusNode.textContent = strings["status.loading"];
       await invoke("start_download", { request });
@@ -1107,7 +1110,7 @@ async function main() {
     } finally {
       startDownloadButton.disabled = false;
       startDownloadButton.removeAttribute("aria-busy");
-      startDownloadButton.textContent = strings["actions.start"];
+      startDownloadButton.querySelector("span").textContent = strings["actions.start"];
       document.getElementById("downloadsComposer").removeAttribute("aria-busy");
     }
   });
@@ -1121,6 +1124,16 @@ async function main() {
     }).catch((error) => {
       settingsStatus.dataset.state = "failed";
       settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    });
+  });
+
+  document.getElementById("browseOutputPath").addEventListener("click", () => {
+    void invoke("pick_folder").then((picked) => {
+      if (picked) {
+        document.getElementById("outputPath").value = picked;
+      }
+    }).catch((error) => {
+      statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 

@@ -9,6 +9,8 @@ use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout, Duration};
 
+use crate::paths::app_data_dir;
+
 const PROGRESS_PREFIX: &str = "__KHUKRI_PROGRESS__:";
 const FINAL_PATH_PREFIX: &str = "__KHUKRI_FINAL_PATH__:";
 const YTDLP_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -51,6 +53,7 @@ pub struct YtDlpJob {
     pub output_path: PathBuf,
     pub quality: MediaQuality,
     pub headers: Vec<(String, String)>,
+    pub browser_session: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +132,11 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
         args.push(runtime);
     }
 
+    if let Some(browser) = validated_browser_session(job.browser_session.as_deref().unwrap_or("")) {
+        args.push("--cookies-from-browser".to_string());
+        args.push(browser.to_string());
+    }
+
     for (name, value) in &job.headers {
         args.push("--add-header".to_string());
         args.push(format!("{name}:{value}"));
@@ -136,6 +144,27 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
 
     args.push(job.url.clone());
     args
+}
+
+pub fn configured_browser_session() -> Option<String> {
+    let contents = fs::read_to_string(app_data_dir().join("settings.json")).ok()?;
+    let settings: serde_json::Value = serde_json::from_str(&contents).ok()?;
+    validated_browser_session(settings.get("browser_session")?.as_str()?).map(str::to_string)
+}
+
+fn validated_browser_session(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        "brave" => Some("brave"),
+        "chrome" => Some("chrome"),
+        "chromium" => Some("chromium"),
+        "edge" => Some("edge"),
+        "firefox" => Some("firefox"),
+        "opera" => Some("opera"),
+        "safari" => Some("safari"),
+        "vivaldi" => Some("vivaldi"),
+        "whale" => Some("whale"),
+        _ => None,
+    }
 }
 
 pub fn parse_progress_line(line: &str) -> Option<YtDlpProgress> {
@@ -581,34 +610,6 @@ fn platform_sidecar_name() -> Result<&'static str> {
     }
 }
 
-fn app_data_dir() -> PathBuf {
-    if let Some(explicit) = std::env::var_os("KHUKRI_DATA_DIR") {
-        return PathBuf::from(explicit);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data).join("Khukri");
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-            return PathBuf::from(data_home).join("khukri");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("khukri");
-        }
-    }
-
-    std::env::temp_dir().join("khukri-data")
-}
-
 fn platform_ffmpeg_name() -> Result<&'static str> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -652,6 +653,7 @@ mod tests {
             output_path: PathBuf::from("D:/downloads/sample.bin"),
             quality,
             headers: vec![("Referer".to_string(), "https://example.com".to_string())],
+            browser_session: None,
         }
     }
 
@@ -659,6 +661,14 @@ mod tests {
     fn quality_defaults_to_best() {
         assert_eq!(MediaQuality::parse(None), MediaQuality::Best);
         assert_eq!(MediaQuality::parse(Some("unknown")), MediaQuality::Best);
+    }
+
+    #[test]
+    fn browser_session_values_are_allowlisted() {
+        assert_eq!(validated_browser_session("chrome"), Some("chrome"));
+        assert_eq!(validated_browser_session(" safari "), Some("safari"));
+        assert_eq!(validated_browser_session("chrome:../../secret"), None);
+        assert_eq!(validated_browser_session("unknown"), None);
     }
 
     #[test]

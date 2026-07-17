@@ -1,223 +1,27 @@
 mod media;
+mod paths;
+mod protocol;
+mod registration;
+mod request;
 
-use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
 use anyhow::{Context, Result};
 use khukri_engine::{db, spawn_download, DownloadConfig, DownloadProgress, DownloadStatus};
-use media::{should_use_ytdlp, MediaQuality, YtDlpJob};
-use serde::{Deserialize, Serialize};
+use media::{configured_browser_session, should_use_ytdlp, MediaQuality, YtDlpJob};
+use paths::{app_data_dir, downloads_dir, sqlite_url};
+use protocol::{read_message, write_message, BridgeEvent, Incoming};
+use request::{browser_headers, filename_from_url, sanitize_filename};
 use sqlx::sqlite::SqlitePoolOptions;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, Duration};
 
-const HOST_ID: &str = "com.khukri.host";
 const BRIDGE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const BRIDGE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-enum Incoming {
-    #[serde(rename = "queue_download")]
-    QueueDownload {
-        url: String,
-        filename: Option<String>,
-        size: Option<u64>,
-        quality: Option<String>,
-        source: Option<String>,
-        #[serde(rename = "pageUrl")]
-        page_url: Option<String>,
-        #[serde(rename = "customHeaders", default)]
-        custom_headers: HashMap<String, String>,
-    },
-}
-
-#[derive(Debug, Serialize)]
-struct BridgeEvent {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    id: String,
-    status: &'static str,
-    bytes_done: u64,
-    total_bytes: Option<u64>,
-    speed_bps: u64,
-    eta_seconds: Option<u64>,
-    segments_done: u32,
-    segments_total: Option<u32>,
-    source: Option<String>,
-    output_path: Option<String>,
-    message: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct HostManifest {
-    name: String,
-    description: String,
-    path: String,
-    #[serde(rename = "type")]
-    host_type: String,
-    allowed_origins: Vec<String>,
-}
-
-fn read_message() -> Result<Incoming> {
-    let mut len_buf = [0u8; 4];
-    io::stdin().read_exact(&mut len_buf)?;
-    let len = u32::from_le_bytes(len_buf) as usize;
-    let mut buf = vec![0u8; len];
-    io::stdin().read_exact(&mut buf)?;
-    Ok(serde_json::from_slice(&buf)?)
-}
-
-fn write_message<T: Serialize>(writer: &mut impl Write, msg: &T) -> Result<()> {
-    let body = serde_json::to_vec(msg)?;
-    let len = (body.len() as u32).to_le_bytes();
-    writer.write_all(&len)?;
-    writer.write_all(&body)?;
-    writer.flush()?;
-    Ok(())
-}
-
-fn downloads_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(profile) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(profile).join("Downloads");
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Downloads");
-        }
-    }
-
-    std::env::temp_dir().join("khukri-downloads")
-}
-
-fn app_data_dir() -> PathBuf {
-    if let Some(explicit) = std::env::var_os("KHUKRI_DATA_DIR") {
-        return PathBuf::from(explicit);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data).join("Khukri");
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-            return PathBuf::from(data_home).join("khukri");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("khukri");
-        }
-    }
-
-    std::env::temp_dir().join("khukri-data")
-}
-
-fn sqlite_url(path: &Path) -> String {
-    format!("sqlite:{}?mode=rwc", path.display())
-}
-
-fn sanitize_filename(name: &str) -> String {
-    let file_name = Path::new(name)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("download.bin");
-    let sanitized: String = file_name
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            _ => ch,
-        })
-        .collect();
-    if sanitized.trim().is_empty() {
-        "download.bin".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn filename_from_url(url: &str) -> String {
-    // Strip query string and fragment before extracting the filename.
-    let trimmed = url
-        .split('?')
-        .next()
-        .unwrap_or(url)
-        .split('#')
-        .next()
-        .unwrap_or(url)
-        .trim_end_matches('/');
-    let path_part = match trimmed.split_once("://") {
-        Some((_, remainder)) => match remainder.split_once('/') {
-            Some((_, path)) => path,
-            None => return "download.bin".to_string(),
-        },
-        None => trimmed,
-    };
-    if path_part.is_empty() {
-        return "download.bin".to_string();
-    }
-    let candidate = path_part.rsplit('/').next().unwrap_or("download.bin");
-    if candidate.is_empty() {
-        return "download.bin".to_string();
-    }
-    sanitize_filename(candidate)
-}
-
-/// Headers that must never be forwarded from the browser extension.
-/// These are hop-by-hop headers or headers that could cause request smuggling,
-/// SSRF amplification, or credential leakage.
-const BLOCKED_HEADERS: &[&str] = &[
-    "host",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-    "keep-alive",
-    "upgrade",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "authorization",
-];
-
-fn browser_headers(
-    page_url: Option<&str>,
-    custom_headers: HashMap<String, String>,
-) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = custom_headers
-        .into_iter()
-        .filter(|(name, _)| {
-            let lower = name.to_ascii_lowercase();
-            !BLOCKED_HEADERS.contains(&lower.as_str())
-        })
-        .collect();
-
-    if let Some(page_url) = page_url {
-        if !headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("Referer"))
-        {
-            headers.push(("Referer".to_string(), page_url.to_string()));
-        }
-    }
-
-    headers
-}
 
 fn status_label(status: DownloadStatus) -> &'static str {
     match status {
@@ -300,242 +104,6 @@ async fn make_pool() -> Result<sqlx::SqlitePool> {
     Ok(pool)
 }
 
-const PLACEHOLDER_ORIGIN: &str = "chrome-extension://replace-with-your-extension-id/";
-
-fn extension_origin_from_env() -> Result<String> {
-    let origin =
-        std::env::var("KHUKRI_EXTENSION_ORIGIN").unwrap_or_else(|_| PLACEHOLDER_ORIGIN.to_string());
-    validate_extension_origin(&origin)?;
-    Ok(origin)
-}
-
-fn validate_extension_origin(origin: &str) -> Result<()> {
-    if origin == PLACEHOLDER_ORIGIN || origin.contains("replace-with-your-extension-id") {
-        anyhow::bail!(
-            "KHUKRI_EXTENSION_ORIGIN is not set. \
-             Set it to your extension's chrome-extension://<id>/ origin before registering."
-        );
-    }
-    if !origin.starts_with("chrome-extension://") && !origin.starts_with("moz-extension://") {
-        anyhow::bail!(
-            "KHUKRI_EXTENSION_ORIGIN must start with chrome-extension:// or moz-extension://, got: {origin}"
-        );
-    }
-    Ok(())
-}
-
-fn native_host_manifest(binary_path: &Path) -> Result<HostManifest> {
-    Ok(HostManifest {
-        name: HOST_ID.to_string(),
-        description: "Khukri Native Messaging Host".to_string(),
-        path: binary_path.display().to_string(),
-        host_type: "stdio".to_string(),
-        allowed_origins: vec![extension_origin_from_env()?],
-    })
-}
-
-#[cfg(target_os = "windows")]
-fn register_native_host(binary_path: &Path) -> Result<()> {
-    let bridge_dir = binary_path
-        .parent()
-        .context("bridge binary has no parent directory")?;
-    let manifest_path = bridge_dir.join(format!("{HOST_ID}.json"));
-    let manifest = serde_json::to_vec_pretty(&native_host_manifest(binary_path)?)?;
-    fs::write(&manifest_path, manifest)?;
-
-    let reg_key = format!(r"HKCU\Software\Google\Chrome\NativeMessagingHosts\{HOST_ID}");
-    let status = std::process::Command::new("reg")
-        .args([
-            "add",
-            &reg_key,
-            "/ve",
-            "/t",
-            "REG_SZ",
-            "/d",
-            &manifest_path.display().to_string(),
-            "/f",
-        ])
-        .status()
-        .context("failed to launch reg.exe")?;
-
-    if !status.success() {
-        anyhow::bail!("failed to register native host in Windows registry");
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn register_native_host(binary_path: &Path) -> Result<()> {
-    let config_dir = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")?
-        .join(".config")
-        .join("google-chrome")
-        .join("NativeMessagingHosts");
-    fs::create_dir_all(&config_dir)?;
-    let manifest_path = config_dir.join(format!("{HOST_ID}.json"));
-    let manifest = serde_json::to_vec_pretty(&native_host_manifest(binary_path)?)?;
-    fs::write(&manifest_path, manifest)?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn register_native_host(binary_path: &Path) -> Result<()> {
-    let config_dir = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set")?
-        .join("Library")
-        .join("Application Support")
-        .join("Google")
-        .join("Chrome")
-        .join("NativeMessagingHosts");
-    fs::create_dir_all(&config_dir)?;
-    let manifest_path = config_dir.join(format!("{HOST_ID}.json"));
-    let manifest = serde_json::to_vec_pretty(&native_host_manifest(binary_path)?)?;
-    fs::write(&manifest_path, manifest)?;
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-fn register_native_host(_binary_path: &Path) -> Result<()> {
-    anyhow::bail!("native host registration is not implemented for this platform")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── header sanitization ───────────────────────────────────────────────────
-
-    #[test]
-    fn blocked_headers_are_stripped() {
-        let mut raw = HashMap::new();
-        raw.insert("Host".to_string(), "evil.com".to_string());
-        raw.insert("Content-Length".to_string(), "9999".to_string());
-        raw.insert("Connection".to_string(), "keep-alive".to_string());
-        raw.insert("Authorization".to_string(), "Bearer tok".to_string());
-        raw.insert("Transfer-Encoding".to_string(), "chunked".to_string());
-        raw.insert("X-Custom".to_string(), "ok".to_string());
-
-        let result = browser_headers(None, raw);
-        let names: Vec<String> = result.iter().map(|(k, _)| k.to_ascii_lowercase()).collect();
-        assert!(!names.contains(&"host".to_string()));
-        assert!(!names.contains(&"content-length".to_string()));
-        assert!(!names.contains(&"connection".to_string()));
-        assert!(!names.contains(&"authorization".to_string()));
-        assert!(!names.contains(&"transfer-encoding".to_string()));
-        assert!(names.contains(&"x-custom".to_string()));
-    }
-
-    #[test]
-    fn referer_injected_when_absent() {
-        let result = browser_headers(Some("https://example.com/page"), HashMap::new());
-        let referer = result
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("Referer"));
-        assert_eq!(
-            referer.map(|(_, v)| v.as_str()),
-            Some("https://example.com/page")
-        );
-    }
-
-    #[test]
-    fn referer_not_duplicated_when_present() {
-        let mut raw = HashMap::new();
-        raw.insert("Referer".to_string(), "https://custom.com/".to_string());
-        let result = browser_headers(Some("https://page.com/"), raw);
-        let count = result
-            .iter()
-            .filter(|(k, _)| k.eq_ignore_ascii_case("Referer"))
-            .count();
-        assert_eq!(count, 1);
-        assert_eq!(result[0].1, "https://custom.com/");
-    }
-
-    // ── origin validation ─────────────────────────────────────────────────────
-
-    #[test]
-    fn placeholder_origin_is_rejected() {
-        assert!(validate_extension_origin(PLACEHOLDER_ORIGIN).is_err());
-        assert!(validate_extension_origin(
-            "chrome-extension://replace-with-your-extension-id/extra"
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn valid_chrome_origin_is_accepted() {
-        assert!(
-            validate_extension_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop/")
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn valid_moz_origin_is_accepted() {
-        assert!(validate_extension_origin("moz-extension://some-uuid/").is_ok());
-    }
-
-    #[test]
-    fn http_origin_is_rejected() {
-        assert!(validate_extension_origin("https://evil.com/").is_err());
-    }
-
-    // ── filename sanitization ─────────────────────────────────────────────────
-
-    #[test]
-    fn sanitize_strips_path_traversal() {
-        assert_eq!(sanitize_filename("../etc/passwd"), "passwd");
-        assert_eq!(sanitize_filename("/etc/passwd"), "passwd");
-    }
-
-    #[test]
-    fn sanitize_replaces_reserved_chars() {
-        assert_eq!(sanitize_filename("file:name?.bin"), "file_name_.bin");
-    }
-
-    #[test]
-    fn sanitize_empty_falls_back() {
-        assert_eq!(sanitize_filename(""), "download.bin");
-        assert_eq!(sanitize_filename("   "), "download.bin");
-    }
-
-    #[test]
-    fn filename_from_url_strips_query() {
-        assert_eq!(
-            filename_from_url("https://example.com/file.zip?token=abc"),
-            "file.zip"
-        );
-    }
-
-    #[test]
-    fn filename_from_url_trailing_slash() {
-        assert_eq!(filename_from_url("https://example.com/"), "download.bin");
-    }
-
-    #[test]
-    fn filename_from_url_strips_fragment() {
-        assert_eq!(
-            filename_from_url("https://example.com/file.zip#section"),
-            "file.zip"
-        );
-    }
-
-    #[test]
-    fn filename_from_url_strips_query_and_fragment() {
-        assert_eq!(
-            filename_from_url("https://example.com/file.zip?token=abc#anchor"),
-            "file.zip"
-        );
-    }
-}
-
-fn should_register(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| arg == "--register" || arg == "--repair")
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -546,8 +114,8 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let exe_path = std::env::current_exe().context("failed to resolve bridge binary path")?;
 
-    if should_register(&args) {
-        register_native_host(&exe_path)?;
+    if registration::requested(&args) {
+        registration::register(&exe_path)?;
         return Ok(());
     }
 
@@ -634,6 +202,7 @@ async fn main() -> Result<()> {
                         output_path: output_path.clone(),
                         quality: MediaQuality::parse(quality.as_deref()),
                         headers,
+                        browser_session: configured_browser_session(),
                     };
                     let source_clone = source.clone();
                     let quality_clone = quality.clone();

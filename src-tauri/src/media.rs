@@ -57,6 +57,7 @@ pub struct MediaJob {
     pub output_path: PathBuf,
     pub quality: MediaQuality,
     pub headers: Vec<(String, String)>,
+    pub browser_session: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -625,6 +626,11 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
         args.push(runtime);
     }
 
+    if let Some(browser) = validated_browser_session(job.browser_session.as_deref()) {
+        args.push("--cookies-from-browser".to_string());
+        args.push(browser.to_string());
+    }
+
     for (name, value) in &job.headers {
         args.push("--add-header".to_string());
         args.push(format!("{name}:{value}"));
@@ -632,6 +638,16 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
 
     args.push(job.url.clone());
     args
+}
+
+fn validated_browser_session(value: Option<&str>) -> Option<&str> {
+    match value.map(str::trim) {
+        Some(
+            browser @ ("brave" | "chrome" | "chromium" | "edge" | "firefox" | "opera" | "safari"
+            | "vivaldi" | "whale"),
+        ) => Some(browser),
+        _ => None,
+    }
 }
 
 fn ytdlp_js_runtime() -> Option<String> {
@@ -978,6 +994,7 @@ mod tests {
                 output_path: PathBuf::from("D:/downloads/sample.bin"),
                 quality: MediaQuality::Best,
                 headers: Vec::new(),
+                browser_session: None,
             },
             Some(binary_path.as_path()),
         );
@@ -998,5 +1015,26 @@ mod tests {
 
         let _ = std::fs::remove_file(&binary_path);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn browser_session_is_validated_before_forwarding() {
+        let mut job = MediaJob {
+            id: "job-1".to_string(),
+            url: "https://www.youtube.com/watch?v=abc".to_string(),
+            output_path: PathBuf::from("/tmp/sample.bin"),
+            quality: MediaQuality::Best,
+            headers: Vec::new(),
+            browser_session: Some("chrome".to_string()),
+        };
+
+        let args = build_arguments(&job, None);
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["--cookies-from-browser", "chrome"]));
+
+        job.browser_session = Some("chrome:../../secret".to_string());
+        let args = build_arguments(&job, None);
+        assert!(!args.iter().any(|part| part == "--cookies-from-browser"));
     }
 }

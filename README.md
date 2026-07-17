@@ -30,6 +30,9 @@ sidecar/                yt-dlp and FFmpeg tooling
 docs/                   design notes and implementation history
 ```
 
+See [docs/codebase-architecture.md](docs/codebase-architecture.md) for module
+ownership and the browser-to-desktop data flow.
+
 ## Requirements
 
 - Rust and Cargo
@@ -91,6 +94,8 @@ cargo build --release -p khukri-bridge
 The host registration manifest is browser-specific. See [extension/README.md](extension/README.md) for setup and troubleshooting, and [docs/extension-architecture.md](docs/extension-architecture.md) for the message flow.
 
 ## Media downloads
+
+Some media sites challenge requests that are not tied to a signed-in browser. In **Settings → General → Browser session**, you can explicitly allow yt-dlp to read cookies from a supported local browser. Khukri stores only the browser name; cookie values do not pass through the extension, UI, logs, or download database. Leave this setting off unless a site requires it.
 
 Khukri uses `yt-dlp` for extractor-backed media URLs. FFmpeg is required when a
 site provides video and audio as separate streams. The app checks its managed

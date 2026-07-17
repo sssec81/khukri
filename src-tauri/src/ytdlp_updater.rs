@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::bootstrap::app_data_dir;
 use crate::media::{build_ytdlp_command, prepare_sidecar_for_execution};
-use crate::AppSettings;
+use crate::settings::AppSettings;
 
 const GITHUB_RELEASES_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const UPDATE_INTERVAL_SECS: i64 = 24 * 60 * 60;

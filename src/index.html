@@ -124,9 +124,16 @@
 
           <section id="downloadsComposer" class="composer" aria-labelledby="composerTitle" hidden>
             <div class="composer-header">
-              <div>
+              <div class="composer-heading">
+                <div class="composer-heading-icon" aria-hidden="true">
+                  <svg viewBox="0 0 20 20" fill="none">
+                    <path d="M10 3v8M6.75 8.25 10 11.5l3.25-3.25M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <div>
                 <h3 id="composerTitle" class="composer-title" data-i18n="composer.title"></h3>
                 <p class="composer-copy" data-i18n="composer.copy"></p>
+                </div>
               </div>
               <button id="composerClose" class="composer-close" type="button" aria-label="Close new download form">
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
@@ -135,26 +142,13 @@
               </button>
             </div>
             <form id="downloadForm" class="download-form">
-              <div class="form-row">
-                <label class="field field-grow">
+              <div class="composer-primary-fields">
+                <label class="field composer-url-field">
                   <span data-i18n="composer.urlLabel"></span>
                   <input id="downloadUrl" name="downloadUrl" type="url" placeholder="https://example.com/file.zip" spellcheck="false" required>
                 </label>
-                <label class="field field-grow">
-                  <span data-i18n="composer.outputLabel"></span>
-                  <input id="outputPath" name="outputPath" type="text">
-                </label>
-              </div>
-              <div class="form-row form-row-align-end">
-                <label class="field">
-                  <span data-i18n="composer.priorityLabel"></span>
-                  <select id="priority" name="priority">
-                    <option value="high" data-i18n="priority.high"></option>
-                    <option value="normal" selected data-i18n="priority.normal"></option>
-                    <option value="low" data-i18n="priority.low"></option>
-                  </select>
-                </label>
-                <label class="field">
+                <div class="composer-routing-row">
+                  <label class="field composer-mode-field">
                   <span data-i18n="composer.qualityLabel"></span>
                   <select id="quality" name="quality">
                     <option value="" data-i18n="quality.direct"></option>
@@ -163,15 +157,45 @@
                     <option value="720p" data-i18n="quality.720p"></option>
                     <option value="audio-only" data-i18n="quality.audioOnly"></option>
                   </select>
-                </label>
-                <label class="field">
-                  <span data-i18n="composer.throttleLabel"></span>
-                  <input id="throttle" name="throttle" type="number" min="0" step="1" placeholder="0">
-                </label>
-                <div class="form-submit-cell">
-                  <button id="startDownloadButton" class="primary-button" type="submit" data-i18n="actions.start"></button>
+                  </label>
+                  <label class="field composer-destination-field">
+                    <span data-i18n="composer.outputLabel"></span>
+                    <div class="composer-destination-row">
+                      <input id="outputPath" name="outputPath" type="text">
+                      <button id="browseOutputPath" class="browse-btn" type="button" data-i18n="composer.browse"></button>
+                    </div>
+                  </label>
                 </div>
               </div>
+
+              <details class="composer-advanced">
+                <summary data-i18n="composer.advanced"></summary>
+                <div class="composer-advanced-grid">
+                  <label class="field">
+                    <span data-i18n="composer.priorityLabel"></span>
+                    <select id="priority" name="priority">
+                      <option value="high" data-i18n="priority.high"></option>
+                      <option value="normal" selected data-i18n="priority.normal"></option>
+                      <option value="low" data-i18n="priority.low"></option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span data-i18n="composer.throttleLabel"></span>
+                    <input id="throttle" name="throttle" type="number" min="0" step="1" data-i18n-placeholder="composer.unlimited" placeholder="Unlimited">
+                  </label>
+                </div>
+              </details>
+
+              <footer class="composer-footer">
+                <p data-i18n="composer.footerHint"></p>
+                <div class="composer-actions">
+                  <button id="composerCancel" class="ghost-btn" type="button" data-i18n="actions.cancel"></button>
+                  <button id="startDownloadButton" class="primary-button button-with-icon" type="submit">
+                    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v7M5.25 7 8 9.75 10.75 7M3 12.5h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span data-i18n="actions.start"></span>
+                  </button>
+                </div>
+              </footer>
             </form>
           </section>
 
@@ -246,6 +270,22 @@
                 <label class="field checkbox-field">
                   <input id="settingsYtdlpAutoUpdate" name="settingsYtdlpAutoUpdate" type="checkbox">
                   <span data-i18n="settings.general.ytdlpAutoUpdateLabel"></span>
+                </label>
+                <label class="field">
+                  <span data-i18n="settings.general.browserSessionLabel"></span>
+                  <select id="settingsBrowserSession" name="settingsBrowserSession">
+                    <option value="" data-i18n="settings.general.browserSessionOff"></option>
+                    <option value="chrome">Chrome</option>
+                    <option value="edge">Microsoft Edge</option>
+                    <option value="brave">Brave</option>
+                    <option value="firefox">Firefox</option>
+                    <option value="safari">Safari</option>
+                    <option value="chromium">Chromium</option>
+                    <option value="opera">Opera</option>
+                    <option value="vivaldi">Vivaldi</option>
+                    <option value="whale">Whale</option>
+                  </select>
+                  <p class="field-hint" data-i18n="settings.general.browserSessionHint"></p>
                 </label>
                 <div class="field">
                   <span data-i18n="settings.general.ytdlpActionsLabel"></span>
@@ -333,7 +373,7 @@
                   <input id="settingsProxyEnabled" name="proxyEnabled" type="checkbox">
                   <span data-i18n="settings.proxy.enabledLabel"></span>
                 </label>
-                <label class="field">
+                <label id="settingsProxyUrlField" class="field">
                   <span data-i18n="settings.proxy.urlLabel"></span>
                   <input id="settingsProxyUrl" name="proxyUrl" type="text" placeholder="http://127.0.0.1:8080">
                   <p class="field-hint" data-i18n="settings.proxy.urlHint"></p>

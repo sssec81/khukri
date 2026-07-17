@@ -1,5 +1,7 @@
 mod bootstrap;
 mod media;
+mod native_host;
+mod settings;
 mod ytdlp_updater;
 
 use chrono::{Local, Timelike};
@@ -19,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State,
 };
 use tauri_plugin_dialog::DialogExt;
@@ -30,13 +32,13 @@ use crate::bootstrap::{app_data_dir, init_db, DbConfig};
 use crate::media::{
     log_ffmpeg_version, should_use_ytdlp, MediaDownloadHandle, MediaJob, MediaQuality,
 };
+use crate::settings::AppSettings;
 use crate::ytdlp_updater::{maybe_update_ytdlp, spawn_background_updater};
 
 const UI_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const TASK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 const TASK_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const BETA_EXTENSION_ORIGIN: &str = "chrome-extension://hlingdbecfefhglkbballggindegcmik/";
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -85,96 +87,6 @@ struct DownloadProgressEvent {
     segments_total: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct GeneralSettings {
-    default_download_path: String,
-    max_concurrent: u8,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct PerformanceSettings {
-    thread_override: Option<u8>,
-    bandwidth_cap: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct SchedulerSettings {
-    enabled: bool,
-    start_hour: u8,
-    end_hour: u8,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct ProxySettings {
-    enabled: bool,
-    url: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct AppearanceSettings {
-    theme: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct AppSettings {
-    general: GeneralSettings,
-    performance: PerformanceSettings,
-    scheduler: SchedulerSettings,
-    proxy: ProxySettings,
-    appearance: AppearanceSettings,
-    #[serde(default, rename = "onboarding_complete")]
-    onboarding_complete: bool,
-    #[serde(default, rename = "ytdlp_auto_update")]
-    ytdlp_auto_update: bool,
-    #[serde(default, rename = "ytdlp_last_check")]
-    ytdlp_last_check: Option<i64>,
-    #[serde(default, rename = "ytdlp_version")]
-    ytdlp_version: Option<String>,
-    #[serde(default, rename = "ytdlp_last_notified_failure")]
-    ytdlp_last_notified_failure: Option<String>,
-    #[serde(default, rename = "ytdlp_last_rate_limit")]
-    ytdlp_last_rate_limit: bool,
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            general: GeneralSettings {
-                default_download_path: app_data_dir().join("downloads").display().to_string(),
-                max_concurrent: 3,
-            },
-            performance: PerformanceSettings {
-                thread_override: None,
-                bandwidth_cap: None,
-            },
-            scheduler: SchedulerSettings {
-                enabled: false,
-                start_hour: 0,
-                end_hour: 23,
-            },
-            proxy: ProxySettings {
-                enabled: false,
-                url: String::new(),
-            },
-            appearance: AppearanceSettings {
-                theme: "system".to_string(),
-            },
-            onboarding_complete: false,
-            ytdlp_auto_update: true,
-            ytdlp_last_check: None,
-            ytdlp_version: None,
-            ytdlp_last_notified_failure: None,
-            ytdlp_last_rate_limit: false,
-        }
-    }
-}
-
 #[derive(Clone)]
 struct ManagedDownload {
     task: ManagedTask,
@@ -207,30 +119,6 @@ struct AppState {
 struct TrayMenuState {
     pause_all: MenuItem<tauri::Wry>,
     resume_all: MenuItem<tauri::Wry>,
-}
-
-fn settings_path() -> PathBuf {
-    app_data_dir().join("settings.json")
-}
-
-fn load_settings_from_disk() -> AppSettings {
-    let path = settings_path();
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(_) => return AppSettings::default(),
-    };
-
-    serde_json::from_str(&contents).unwrap_or_else(|_| AppSettings::default())
-}
-
-fn save_settings_to_disk(settings: &AppSettings) -> Result<(), String> {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())
 }
 
 fn parse_priority(value: Option<&str>) -> Priority {
@@ -311,53 +199,6 @@ fn unix_now_secs() -> i64 {
 
 fn output_file_exists(file_path: &str) -> bool {
     Path::new(file_path).is_file()
-}
-
-fn register_bundled_native_host() -> Result<(), String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve Khukri executable: {error}"))?;
-    let directory = executable
-        .parent()
-        .ok_or_else(|| "Khukri executable has no parent directory".to_string())?;
-
-    #[cfg(target_os = "windows")]
-    let names = [
-        "khukri-bridge.exe",
-        "khukri-bridge-x86_64-pc-windows-msvc.exe",
-    ];
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let names = ["khukri-bridge", "khukri-bridge-aarch64-apple-darwin"];
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    let names = ["khukri-bridge", "khukri-bridge-x86_64-apple-darwin"];
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let names = ["khukri-bridge", "khukri-bridge-x86_64-unknown-linux-gnu"];
-
-    let bridge = names
-        .iter()
-        .map(|name| directory.join(name))
-        .find(|path| path.is_file())
-        .ok_or_else(|| {
-            format!(
-                "bundled native bridge was not found next to {}",
-                executable.display()
-            )
-        })?;
-
-    let output = Command::new(&bridge)
-        .arg("--repair")
-        .env("KHUKRI_EXTENSION_ORIGIN", BETA_EXTENSION_ORIGIN)
-        .output()
-        .map_err(|error| format!("failed to launch {}: {error}", bridge.display()))?;
-
-    if output.status.success() {
-        tracing::info!(bridge = %bridge.display(), "native messaging host registered");
-        return Ok(());
-    }
-
-    Err(format!(
-        "native host registration failed: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    ))
 }
 
 fn map_download_row(row: db::DownloadRow) -> DownloadListItem {
@@ -443,6 +284,8 @@ fn browser_headers(
         "te",
         "trailer",
         "authorization",
+        "cookie",
+        "set-cookie",
     ];
 
     let mut headers: Vec<(String, String)> = custom_headers
@@ -829,6 +672,7 @@ async fn start_managed_download(
             output_path_string,
             priority,
             existing_id,
+            settings_snapshot.browser_session.clone(),
         )
         .await;
     }
@@ -958,6 +802,7 @@ async fn start_managed_media_download(
     output_path_string: String,
     priority: Priority,
     existing_id: Option<String>,
+    browser_session: Option<String>,
 ) -> Result<DownloadListItem, String> {
     let quality = MediaQuality::parse(request.quality.as_deref());
     let id = existing_id.unwrap_or_else(|| download_id_for(&request.url, &output_path_string));
@@ -993,6 +838,7 @@ async fn start_managed_media_download(
         output_path,
         quality,
         headers,
+        browser_session,
     });
     let progress = handle.subscribe();
     let handle = Arc::new(handle);
@@ -1220,6 +1066,18 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("Khukri")
+        .on_tray_icon_event(|tray, event| {
+            if matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                let _ = show_main_window(tray.app_handle());
+            }
+        })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray-pause-all" => {
                 let app = app.clone();
@@ -1448,7 +1306,7 @@ async fn update_settings(
     state: State<'_, AppState>,
     settings: AppSettings,
 ) -> Result<AppSettings, String> {
-    save_settings_to_disk(&settings)?;
+    settings::save(&settings)?;
     {
         let mut current = state.settings.lock().await;
         *current = settings.clone();
@@ -1469,7 +1327,7 @@ async fn acknowledge_media_onboarding(
         current.clone()
     };
 
-    save_settings_to_disk(&next_settings)?;
+    settings::save(&next_settings)?;
     let _ = app.emit("settings-updated", &next_settings);
     Ok(next_settings)
 }
@@ -1498,7 +1356,10 @@ async fn reset_settings_section(
     let next_settings = {
         let mut current = state.settings.lock().await;
         match section.as_str() {
-            "general" => current.general = defaults.general,
+            "general" => {
+                current.general = defaults.general;
+                current.browser_session = defaults.browser_session;
+            }
             "performance" => current.performance = defaults.performance,
             "scheduler" => current.scheduler = defaults.scheduler,
             "proxy" => current.proxy = defaults.proxy,
@@ -1509,7 +1370,7 @@ async fn reset_settings_section(
         current.clone()
     };
 
-    save_settings_to_disk(&next_settings)?;
+    settings::save(&next_settings)?;
     let _ = app.emit("settings-updated", &next_settings);
     let _ = promote_pending_downloads(&app, &state).await;
     Ok(next_settings)
@@ -1662,8 +1523,8 @@ pub fn run() {
             .await
             .expect("failed to reset stale active downloads");
 
-        let settings = load_settings_from_disk();
-        save_settings_to_disk(&settings).expect("failed to save Khukri app settings");
+        let settings = settings::load();
+        settings::save(&settings).expect("failed to save Khukri app settings");
 
         tauri::Builder::default()
             .manage(AppState {
@@ -1675,7 +1536,7 @@ pub fn run() {
             })
             .setup(|app| {
                 setup_tray(app)?;
-                if let Err(error) = register_bundled_native_host() {
+                if let Err(error) = native_host::register_bundled() {
                     tracing::warn!(%error, "could not register bundled native messaging host");
                 }
                 tauri::async_runtime::spawn(async move {
@@ -1710,6 +1571,17 @@ pub fn run() {
                     }
                 });
                 Ok(())
+            })
+            .on_window_event(|window, event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let state = window.app_handle().state::<AppState>();
+                    if !state.quitting.load(Ordering::SeqCst) {
+                        api.prevent_close();
+                        if let Err(error) = window.hide() {
+                            tracing::error!(%error, "failed to hide Khukri window");
+                        }
+                    }
+                }
             })
             .plugin(tauri_plugin_dialog::init())
             .invoke_handler(tauri::generate_handler![
