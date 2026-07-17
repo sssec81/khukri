@@ -26,11 +26,15 @@
   --kh-red-bg:   rgba(220, 38, 38, 0.15);
 
   --kh-violet-bg: rgba(139, 92, 246, 0.15);
+  --kh-violet-b:  rgba(167, 139, 250, 0.28);
   --kh-violet-t:  #a78bfa;
   --kh-sky-bg:    rgba(14, 165, 233, 0.15);
+  --kh-sky-b:     rgba(56, 189, 248, 0.28);
   --kh-sky-t:     #38bdf8;
   --kh-rose-bg:   rgba(244, 63, 94, 0.15);
+  --kh-rose-b:    rgba(251, 113, 133, 0.28);
   --kh-rose-t:    #fb7185;
+  --kh-amber-b:   rgba(251, 191, 36, 0.28);
 
   --kh-b1: rgba(255,255,255,0.08);
   --kh-b2: rgba(255,255,255,0.12);
@@ -76,11 +80,15 @@
   --kh-red-bg:   rgba(220, 38, 38, 0.12);
 
   --kh-violet-bg: rgba(139, 92, 246, 0.12);
+  --kh-violet-b:  rgba(124, 58, 237, 0.24);
   --kh-violet-t:  #7c3aed;
   --kh-sky-bg:    rgba(14, 165, 233, 0.12);
+  --kh-sky-b:     rgba(2, 132, 199, 0.24);
   --kh-sky-t:     #0284c7;
   --kh-rose-bg:   rgba(244, 63, 94, 0.12);
+  --kh-rose-b:    rgba(225, 29, 72, 0.24);
   --kh-rose-t:    #e11d48;
+  --kh-amber-b:   rgba(217, 119, 6, 0.24);
 
   --kh-b1: rgba(0,0,0,0.06);
   --kh-b2: rgba(0,0,0,0.1);
@@ -167,14 +175,14 @@ button, input, select { touch-action: manipulation; }
 }
 
 .brand-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #2a2a2a, #111);
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  background: transparent;
   overflow: hidden;
   flex-shrink: 0;
   user-select: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.15) inset, 0 0 16px rgba(99, 102, 241, 0.22);
+  box-shadow: 0 0 0 1px var(--kh-b1);
 }
 
 .brand-icon {
@@ -199,7 +207,7 @@ button, input, select { touch-action: manipulation; }
 
 .nav-item {
   width: 100%;
-  min-height: 42px;
+  min-height: 44px;
   padding: 9px 12px;
   border: none;
   border-radius: var(--r2);
@@ -210,7 +218,9 @@ button, input, select { touch-action: manipulation; }
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
   margin-bottom: 2px;
   display: flex;
   align-items: center;
@@ -227,7 +237,9 @@ button, input, select { touch-action: manipulation; }
   border-radius: 6px;
   flex-shrink: 0;
   opacity: 0.7;
-  transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .nav-item:hover { 
@@ -318,7 +330,7 @@ button, input, select { touch-action: manipulation; }
   margin: 0;
   max-width: 72ch;
   color: var(--kh-t3);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -400,7 +412,7 @@ button, input, select { touch-action: manipulation; }
   border: none;
   font-weight: 600;
   box-shadow: 0 4px 14px var(--kh-accent-bg);
-  min-height: 40px;
+  min-height: 44px;
   transition: background-color 180ms ease-out,
               box-shadow 180ms ease-out,
               transform 180ms ease-out;
@@ -522,10 +534,14 @@ button, input, select { touch-action: manipulation; }
   font: inherit;
   font-size: 13px;
   font-weight: 500;
-  min-height: 40px;
+  min-height: 44px;
   padding: 8px 14px;
   cursor: pointer;
-  transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 200ms cubic-bezier(0.16, 1, 0.3, 1);
   white-space: nowrap;
   backdrop-filter: blur(8px);
 }
@@ -556,6 +572,27 @@ button[disabled].queue-btn:hover {
   box-shadow: none;
 }
 
+button[aria-busy="true"] {
+  cursor: progress;
+}
+
+button[aria-busy="true"]::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  margin-left: 7px;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  vertical-align: -2px;
+  animation: button-busy-spin 650ms linear infinite;
+}
+
+@keyframes button-busy-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── FOCUS STATES ──────────────────────────────────────────────────────────── */
 .primary-button:focus-visible,
 .ghost-btn:focus-visible,
@@ -572,35 +609,38 @@ select:focus-visible {
 
 /* ── COMPOSER ──────────────────────────────────────────────────────────────── */
 .composer {
-  width: min(100%, 720px);
+  width: min(100%, 600px);
   align-self: center;
   background: var(--kh-surface);
   border: 1px solid var(--kh-b2);
   border-radius: var(--r3);
-  margin: 0 auto 6px;
+  margin: 0 auto 4px;
   overflow: hidden;
   flex-shrink: 0;
   box-shadow: 0 24px 64px rgba(0,0,0,0.32), 0 1px 0 rgba(255,255,255,0.04) inset;
-  transition: all 300ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 240ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 240ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 240ms cubic-bezier(0.16, 1, 0.3, 1),
+              transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .composer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--kh-b1);
 }
 
 .composer-heading {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .composer-heading-icon {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -611,12 +651,12 @@ select:focus-visible {
 }
 
 .composer-heading-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 
 .composer-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0;
   color: var(--kh-t2);
@@ -624,15 +664,15 @@ select:focus-visible {
 }
 
 .composer-copy {
-  margin: 2px 0 0;
+  margin: 1px 0 0;
   color: var(--kh-t3);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
 .composer-close {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   border: none;
   border-radius: var(--r1);
   background: transparent;
@@ -653,19 +693,19 @@ select:focus-visible {
 .download-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px 0;
+  gap: 8px;
+  padding: 10px 12px 0;
 }
 
 .composer-primary-fields {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .composer-routing-row {
   display: grid;
   grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1fr);
-  gap: 10px;
+  gap: 8px;
 }
 
 .composer-destination-row {
@@ -678,14 +718,14 @@ select:focus-visible {
 }
 
 .composer-destination-row .browse-btn {
-  min-height: 40px;
-  min-width: 88px;
+  min-height: 44px;
+  min-width: 76px;
   padding-inline: 10px;
 }
 
 .composer-advanced {
   border-top: 1px solid var(--kh-b1);
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 .composer-advanced summary {
@@ -698,7 +738,7 @@ select:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 28px;
+  min-height: 44px;
   border-radius: 6px;
 }
 
@@ -721,13 +761,13 @@ select:focus-visible {
 .composer-advanced-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  padding-top: 8px;
+  gap: 8px;
+  padding-top: 6px;
 }
 
 .composer-footer {
-  margin: 0 -16px;
-  padding: 10px 16px;
+  margin: 0 -12px;
+  padding: 8px 12px;
   border-top: 1px solid var(--kh-b1);
   background: rgba(0,0,0,0.08);
   display: flex;
@@ -739,7 +779,7 @@ select:focus-visible {
 .composer-footer p {
   margin: 0;
   color: var(--kh-t3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .composer-actions {
@@ -749,7 +789,10 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
-.composer-actions .primary-button { min-width: 144px; }
+.composer-actions .primary-button { min-width: 132px; }
+
+.composer input,
+.composer select { min-height: 44px; }
 
 /* ── FORM FIELDS ───────────────────────────────────────────────────────────── */
 .field { display: grid; gap: 4px; }
@@ -776,12 +819,14 @@ select {
   border: 1px solid var(--kh-b2);
   border-radius: var(--r1);
   background: rgba(255,255,255,0.03);
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 10px;
   color: var(--kh-t1);
   font: inherit;
   font-size: 13px;
-  transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
 }
 
@@ -840,7 +885,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   grid-template-columns: auto 1fr;
   align-items: center;
   gap: 9px;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .checkbox-field > span {
@@ -1146,7 +1191,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .queue-card--complete .queue-card-title { font-size: 12.5px; }
-.queue-card--complete .queue-card-url { font-size: 10.5px; }
+.queue-card--complete .queue-card-url { font-size: 12px; }
 
 .queue-card-complete-meta {
   display: flex;
@@ -1159,7 +1204,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 .queue-card--complete .queue-card-actions { flex-shrink: 0; }
 
 .queue-card--complete .queue-btn {
-  min-height: 32px;
+  min-height: 44px;
   padding: 5px 9px;
 }
 
@@ -1175,7 +1220,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1235,7 +1280,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .queue-card-url {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--kh-t3);
   line-height: 1.3;
   white-space: nowrap;
@@ -1256,13 +1301,13 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 18px;
+  min-height: 22px;
   padding: 0 7px;
   border-radius: 5px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   background: rgba(255, 255, 255, 0.06);
   color: var(--kh-t3);
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 500;
   line-height: 1;
   flex-shrink: 0;
@@ -1306,9 +1351,9 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   overflow: hidden;
 }
 
-/* Only animate width on determinate bars (those with an inline style.width) */
+/* Progress follows backend state directly; avoid delayed layout animation. */
 .progress-fill--determinate {
-  transition: width 600ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition: none;
 }
 
 .progress-fill--indeterminate {
@@ -1348,7 +1393,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 .progress-fill--missing   { background: var(--kh-t3); opacity: 0.7; }
 
 .queue-card-meta {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--kh-t3);
   line-height: 1.4;
@@ -1374,9 +1419,9 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   background: transparent;
   color: var(--kh-t3);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  min-height: 34px;
+  min-height: 44px;
   padding: 6px 11px;
   cursor: pointer;
   transition: background-color 180ms ease,
@@ -1415,7 +1460,14 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .queue-btn-danger {
-  color: var(--kh-t3);
+  color: var(--kh-red-t);
+  border-color: var(--kh-red-bg);
+}
+
+.queue-btn-danger:hover {
+  color: var(--kh-red-t);
+  border-color: var(--kh-red-t);
+  background: var(--kh-red-bg);
 }
 
 .queue-failure-panel {
@@ -1450,7 +1502,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 
 .queue-failure-detail {
   color: var(--kh-t3);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .queue-failure-detail summary {
@@ -1470,7 +1522,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 
 /* ── STATUS BADGES ─────────────────────────────────────────────────────────── */
 .pill {
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.01em;
   text-transform: none;
@@ -1515,7 +1567,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .view--settings .toolbar-actions .primary-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 18px;
   border-radius: 11px;
   font-size: 13px;
@@ -1526,8 +1578,8 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 :root[data-theme="light"] .view--settings .toolbar-actions .primary-button {
-  background: linear-gradient(180deg, #5B55E8 0%, #4F46E5 100%);
-  color: #FFFFFF;
+  background: var(--kh-accent);
+  color: var(--kh-on-accent);
   box-shadow:
     0 12px 28px rgba(79, 70, 229, 0.22),
     0 1px 0 rgba(255,255,255,0.35) inset;
@@ -1564,7 +1616,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 
 .field-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--kh-t3);
 }
@@ -1576,7 +1628,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 .view--settings input:not([type="checkbox"]),
 .view--settings select,
 .view--settings .ghost-btn {
-  min-height: 40px;
+  min-height: 44px;
   border-radius: 7px;
   background: rgba(255,255,255,0.05);
   border-color: rgba(255,255,255,0.1);
@@ -1657,7 +1709,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .view--settings .checkbox-field > span {
@@ -1730,6 +1782,30 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   color: var(--kh-accent-t);
 }
 
+.settings-section-icon--violet {
+  background: var(--kh-violet-bg);
+  border-color: var(--kh-violet-b);
+  color: var(--kh-violet-t);
+}
+
+.settings-section-icon--amber {
+  background: var(--kh-amber-bg);
+  border-color: var(--kh-amber-b);
+  color: var(--kh-amber-t);
+}
+
+.settings-section-icon--sky {
+  background: var(--kh-sky-bg);
+  border-color: var(--kh-sky-b);
+  color: var(--kh-sky-t);
+}
+
+.settings-section-icon--rose {
+  background: var(--kh-rose-bg);
+  border-color: var(--kh-rose-b);
+  color: var(--kh-rose-t);
+}
+
 .settings-section-label-group {
   display: flex;
   align-items: center;
@@ -1745,7 +1821,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .settings-section-head .section-desc {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--kh-t3);
   margin: 0;
   line-height: 1.4;
@@ -1771,10 +1847,10 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   border: 1px solid rgba(255,255,255,0.08);
   color: var(--kh-t3);
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   cursor: pointer;
-  min-height: 34px;
+  min-height: 44px;
   padding: 6px 10px;
   border-radius: 6px;
   transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
@@ -1842,7 +1918,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
   justify-content: center;
   min-width: 130px;
   padding: 0 14px;
-  min-height: 40px;
+  min-height: 44px;
   background: rgba(255,255,255,0.02);
   border: 0.5px solid rgba(255,255,255,0.1);
   border-radius: 10px;
@@ -1897,7 +1973,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 }
 
 .view--settings .checkbox-field {
-  min-height: 40px;
+  min-height: 44px;
   align-items: center;
 }
 
@@ -1944,7 +2020,7 @@ input[type="number"]:focus::-webkit-inner-spin-button {
 
 .view--settings .settings-section .ghost-btn,
 .view--settings .settings-section .browse-btn {
-  min-height: 40px;
+  min-height: 44px;
 }
 
 /* ── RESPONSIVE ────────────────────────────────────────────────────────────── */

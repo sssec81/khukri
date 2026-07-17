@@ -1055,6 +1055,7 @@ fn resolved_thread_count(total_bytes: u64, override_threads: Option<u8>) -> u8 {
     requested.min(max_by_min_segment)
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

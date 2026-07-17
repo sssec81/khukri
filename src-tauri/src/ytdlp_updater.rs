@@ -454,6 +454,7 @@ fn unix_now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+#[allow(clippy::needless_return)]
 fn platform_sidecar_name() -> Result<&'static str, String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -482,6 +483,7 @@ fn platform_sidecar_name() -> Result<&'static str, String> {
     }
 }
 
+#[allow(clippy::needless_return)]
 fn platform_release_asset_name() -> Result<&'static str, String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {

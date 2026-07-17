@@ -79,6 +79,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
 // ── Downloads ─────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_download(
     pool: &SqlitePool,
     id: &str,

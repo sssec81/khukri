@@ -1,6 +1,7 @@
 use crate::error::{KhukriError, Result};
 use tokio::fs::File;
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,8 +113,7 @@ async fn macos_preallocate(file: &File, size: u64) -> Result<()> {
     }
 
     let file_clone = file.try_clone().await.map_err(|_| {
-        KhukriError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        KhukriError::Io(std::io::Error::other(
             "failed to clone file for preallocate operation",
         ))
     })?;

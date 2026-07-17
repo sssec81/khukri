@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, State,
+    Emitter, Manager, State, Theme,
 };
 use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
@@ -110,6 +110,7 @@ impl ManagedTask {
 struct AppState {
     pool: SqlitePool,
     active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    queue_gate: Arc<Mutex<()>>,
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
     quitting: Arc<AtomicBool>,
@@ -337,6 +338,20 @@ fn configured_proxy_url(settings: &AppSettings) -> Option<String> {
     }
 }
 
+fn sync_native_window_theme(app: &tauri::AppHandle, theme: &str) {
+    let theme = match theme {
+        "light" => Some(Theme::Light),
+        "dark" => Some(Theme::Dark),
+        _ => None,
+    };
+
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.set_theme(theme) {
+            tracing::warn!(%error, "could not update the native window theme");
+        }
+    }
+}
+
 fn cleanup_download_file(path: &str) -> Result<(), String> {
     let target = Path::new(path);
     if !target.exists() {
@@ -477,6 +492,7 @@ async fn promote_pending_downloads_with_parts(
     app: &tauri::AppHandle,
     pool: SqlitePool,
     active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    queue_gate: Arc<Mutex<()>>,
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
 ) -> Result<(), String> {
@@ -488,6 +504,10 @@ async fn promote_pending_downloads_with_parts(
         return Ok(());
     }
 
+    // Starting a job has asynchronous database work before it appears in
+    // `active`. Serialize promotion with user-triggered starts so capacity and
+    // duplicate checks remain valid for that entire hand-off.
+    let _queue_gate = queue_gate.lock().await;
     loop {
         let max_concurrent = settings.lock().await.general.max_concurrent as usize;
 
@@ -545,6 +565,7 @@ async fn promote_pending_downloads(app: &tauri::AppHandle, state: &AppState) -> 
         app,
         state.pool.clone(),
         state.active.clone(),
+        state.queue_gate.clone(),
         state.cancelled.clone(),
         state.settings.clone(),
     )
@@ -570,15 +591,21 @@ async fn wait_until_inactive(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_or_queue_download(
     app: tauri::AppHandle,
     pool: SqlitePool,
     active: Arc<Mutex<HashMap<String, ManagedDownload>>>,
+    queue_gate: Arc<Mutex<()>>,
     cancelled: Arc<Mutex<HashSet<String>>>,
     settings: Arc<Mutex<AppSettings>>,
     request: StartDownloadRequest,
     existing_id: Option<String>,
 ) -> Result<DownloadListItem, String> {
+    // A download is registered in `active` only after it is persisted and its
+    // task is created. Keep this gate until then so concurrent calls cannot
+    // start duplicate jobs or exceed the configured limit.
+    let _queue_gate = queue_gate.lock().await;
     let settings_snapshot = settings.lock().await.clone();
     let request = request_with_settings(request, &settings_snapshot);
     let output_path = normalize_output_path(&request.file_path, &settings_snapshot, &request.url);
@@ -662,6 +689,8 @@ async fn start_managed_download(
         request.quality.as_deref(),
         &request.url,
     ) {
+        let bandwidth_cap = request.bytes_per_sec;
+        let concurrent_fragments = request.override_threads;
         return start_managed_media_download(
             app,
             pool,
@@ -673,15 +702,17 @@ async fn start_managed_download(
             priority,
             existing_id,
             settings_snapshot.browser_session.clone(),
+            configured_proxy_url(&settings_snapshot),
+            bandwidth_cap,
+            concurrent_fragments,
         )
         .await;
     }
 
-    let mut config = DownloadConfig::new(request.url.clone(), output_path);
-    // Enforce output path sandbox: restrict downloads to the configured downloads directory.
-    config.allowed_root = Some(PathBuf::from(
-        &settings_snapshot.general.default_download_path,
-    ));
+    let mut config = DownloadConfig::new(request.url.clone(), output_path.clone());
+    // A path selected in the New Download dialog may differ from the default
+    // folder. Restrict it to that selected folder rather than rejecting it.
+    config.allowed_root = output_path.parent().map(Path::to_path_buf);
     config.priority = priority.clone();
     config.override_threads = request.override_threads;
     config.throttle = ThrottleConfig {
@@ -748,11 +779,11 @@ async fn start_managed_download(
 
             if is_terminal {
                 active_for_task.lock().await.remove(&id_for_task);
-                if cancelled_for_task.lock().await.remove(&snapshot.id) {
-                    if matches!(snapshot.status, DownloadStatus::Paused) {
-                        let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
-                        let _ = cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
-                    }
+                if cancelled_for_task.lock().await.remove(&snapshot.id)
+                    && matches!(snapshot.status, DownloadStatus::Paused)
+                {
+                    let _ = db::set_download_cancelled(&pool_for_task, &snapshot.id).await;
+                    let _ = cleanup_download_file_for_id(&pool_for_task, &snapshot.id).await;
                 }
                 let _ = refresh_download_snapshot(&pool_for_task, &snapshot.id).await;
                 let _ = emit_queue_updated(&app_for_task, &pool_for_task).await;
@@ -792,6 +823,7 @@ async fn start_managed_download(
     Ok(snapshot)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_managed_media_download(
     app: tauri::AppHandle,
     pool: SqlitePool,
@@ -803,6 +835,9 @@ async fn start_managed_media_download(
     priority: Priority,
     existing_id: Option<String>,
     browser_session: Option<String>,
+    proxy_url: Option<String>,
+    bandwidth_cap: Option<u64>,
+    concurrent_fragments: Option<u8>,
 ) -> Result<DownloadListItem, String> {
     let quality = MediaQuality::parse(request.quality.as_deref());
     let id = existing_id.unwrap_or_else(|| download_id_for(&request.url, &output_path_string));
@@ -839,6 +874,9 @@ async fn start_managed_media_download(
         quality,
         headers,
         browser_session,
+        proxy_url,
+        bandwidth_cap,
+        concurrent_fragments,
     });
     let progress = handle.subscribe();
     let handle = Arc::new(handle);
@@ -1017,6 +1055,7 @@ async fn resume_all_downloads(app: tauri::AppHandle, state: &AppState) -> Result
             app.clone(),
             state.pool.clone(),
             state.active.clone(),
+            state.queue_gate.clone(),
             state.cancelled.clone(),
             state.settings.clone(),
             request,
@@ -1134,6 +1173,7 @@ async fn start_download(
         app,
         state.pool.clone(),
         state.active.clone(),
+        state.queue_gate.clone(),
         state.cancelled.clone(),
         state.settings.clone(),
         request,
@@ -1213,6 +1253,7 @@ async fn resume_download(
         app,
         state.pool.clone(),
         state.active.clone(),
+        state.queue_gate.clone(),
         state.cancelled.clone(),
         state.settings.clone(),
         request,
@@ -1311,6 +1352,7 @@ async fn update_settings(
         let mut current = state.settings.lock().await;
         *current = settings.clone();
     }
+    sync_native_window_theme(&app, &settings.appearance.theme);
     let _ = app.emit("settings-updated", &settings);
     let _ = promote_pending_downloads(&app, &state).await;
     Ok(settings)
@@ -1328,6 +1370,7 @@ async fn acknowledge_media_onboarding(
     };
 
     settings::save(&next_settings)?;
+    sync_native_window_theme(&app, &next_settings.appearance.theme);
     let _ = app.emit("settings-updated", &next_settings);
     Ok(next_settings)
 }
@@ -1385,6 +1428,7 @@ fn app_pool_config() -> DbConfig {
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1524,17 +1568,27 @@ pub fn run() {
             .expect("failed to reset stale active downloads");
 
         let settings = settings::load();
-        settings::save(&settings).expect("failed to save Khukri app settings");
+        if let Err(error) = settings::save(&settings) {
+            tracing::warn!(%error, "could not persist Khukri settings during startup");
+        }
 
         tauri::Builder::default()
             .manage(AppState {
                 pool,
                 active: Arc::new(Mutex::new(HashMap::new())),
+                queue_gate: Arc::new(Mutex::new(())),
                 cancelled: Arc::new(Mutex::new(HashSet::new())),
                 settings: Arc::new(Mutex::new(settings)),
                 quitting: Arc::new(AtomicBool::new(false)),
             })
             .setup(|app| {
+                let theme = app
+                    .state::<AppState>()
+                    .settings
+                    .try_lock()
+                    .map(|settings| settings.appearance.theme.clone())
+                    .unwrap_or_else(|_| "system".to_string());
+                sync_native_window_theme(app.handle(), &theme);
                 setup_tray(app)?;
                 if let Err(error) = native_host::register_bundled() {
                     tracing::warn!(%error, "could not register bundled native messaging host");

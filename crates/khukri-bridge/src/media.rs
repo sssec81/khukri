@@ -54,6 +54,21 @@ pub struct YtDlpJob {
     pub quality: MediaQuality,
     pub headers: Vec<(String, String)>,
     pub browser_session: Option<String>,
+    pub proxy_url: Option<String>,
+    pub bandwidth_cap: Option<u64>,
+    pub concurrent_fragments: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeSettings {
+    pub download_root: Option<PathBuf>,
+    pub max_concurrent: usize,
+    pub proxy_url: Option<String>,
+    pub bandwidth_cap: Option<u64>,
+    pub thread_override: Option<u8>,
+    pub scheduler_enabled: bool,
+    pub scheduler_start_hour: u8,
+    pub scheduler_end_hour: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +152,21 @@ fn build_arguments_with_ffmpeg(job: &YtDlpJob, ffmpeg_binary: Option<&Path>) -> 
         args.push(browser.to_string());
     }
 
+    if let Some(proxy_url) = job.proxy_url.as_deref() {
+        args.push("--proxy".to_string());
+        args.push(proxy_url.to_string());
+    }
+
+    if let Some(bandwidth_cap) = job.bandwidth_cap.filter(|value| *value > 0) {
+        args.push("--limit-rate".to_string());
+        args.push(bandwidth_cap.to_string());
+    }
+
+    if let Some(concurrent_fragments) = job.concurrent_fragments.filter(|value| *value > 0) {
+        args.push("--concurrent-fragments".to_string());
+        args.push(concurrent_fragments.to_string());
+    }
+
     for (name, value) in &job.headers {
         args.push("--add-header".to_string());
         args.push(format!("{name}:{value}"));
@@ -150,6 +180,90 @@ pub fn configured_browser_session() -> Option<String> {
     let contents = fs::read_to_string(app_data_dir().join("settings.json")).ok()?;
     let settings: serde_json::Value = serde_json::from_str(&contents).ok()?;
     validated_browser_session(settings.get("browser_session")?.as_str()?).map(str::to_string)
+}
+
+pub fn configured_settings() -> BridgeSettings {
+    let fallback = BridgeSettings {
+        download_root: None,
+        max_concurrent: 3,
+        proxy_url: None,
+        bandwidth_cap: None,
+        thread_override: None,
+        scheduler_enabled: false,
+        scheduler_start_hour: 0,
+        scheduler_end_hour: 23,
+    };
+    let Some(contents) = fs::read_to_string(app_data_dir().join("settings.json")).ok() else {
+        return fallback;
+    };
+    let Some(settings) = serde_json::from_str::<serde_json::Value>(&contents).ok() else {
+        return fallback;
+    };
+
+    let download_root = settings
+        .get("general")
+        .and_then(|general| general.get("defaultDownloadPath"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let max_concurrent = settings
+        .get("general")
+        .and_then(|general| general.get("maxConcurrent"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| (1..=16).contains(value))
+        .unwrap_or(3) as usize;
+    let proxy_url = settings
+        .get("proxy")
+        .filter(|proxy| proxy.get("enabled").and_then(serde_json::Value::as_bool) == Some(true))
+        .and_then(|proxy| proxy.get("url"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|url| {
+            url.starts_with("http://")
+                || url.starts_with("https://")
+                || url.starts_with("socks5://")
+        })
+        .map(str::to_string);
+    let bandwidth_cap = settings
+        .get("performance")
+        .and_then(|performance| performance.get("bandwidthCap"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value > 0);
+    let thread_override = settings
+        .get("performance")
+        .and_then(|performance| performance.get("threadOverride"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| (1..=128).contains(value))
+        .map(|value| value as u8);
+    let scheduler_enabled = settings
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("enabled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let scheduler_start_hour = settings
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("startHour"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value <= 23)
+        .unwrap_or(0) as u8;
+    let scheduler_end_hour = settings
+        .get("scheduler")
+        .and_then(|scheduler| scheduler.get("endHour"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|value| *value <= 23)
+        .unwrap_or(23) as u8;
+
+    BridgeSettings {
+        download_root,
+        max_concurrent,
+        proxy_url,
+        bandwidth_cap,
+        thread_override,
+        scheduler_enabled,
+        scheduler_start_hour,
+        scheduler_end_hour,
+    }
 }
 
 fn validated_browser_session(value: &str) -> Option<&'static str> {
@@ -395,7 +509,6 @@ where
                     };
 
                     {
-                        let line = line;
                         if let Some(progress) = parse_progress_line(&line) {
                             on_progress(progress);
                             continue;
@@ -578,6 +691,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::needless_return)]
 fn platform_sidecar_name() -> Result<&'static str> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -610,6 +724,7 @@ fn platform_sidecar_name() -> Result<&'static str> {
     }
 }
 
+#[allow(clippy::needless_return)]
 fn platform_ffmpeg_name() -> Result<&'static str> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -654,6 +769,9 @@ mod tests {
             quality,
             headers: vec![("Referer".to_string(), "https://example.com".to_string())],
             browser_session: None,
+            proxy_url: None,
+            bandwidth_cap: None,
+            concurrent_fragments: None,
         }
     }
 
@@ -697,6 +815,23 @@ mod tests {
         assert!(hd_args
             .windows(2)
             .any(|part| part == ["--ffmpeg-location", "/tmp/ffmpeg"]));
+    }
+
+    #[test]
+    fn proxy_and_performance_options_are_forwarded_to_ytdlp() {
+        let mut job = sample_job(MediaQuality::Best);
+        job.proxy_url = Some("http://127.0.0.1:8080".to_string());
+        job.bandwidth_cap = Some(2_048);
+        job.concurrent_fragments = Some(3);
+
+        let args = build_arguments(&job);
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["--proxy", "http://127.0.0.1:8080"]));
+        assert!(args.windows(2).any(|part| part == ["--limit-rate", "2048"]));
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["--concurrent-fragments", "3"]));
     }
 
     #[test]

@@ -34,6 +34,13 @@
       transition: opacity 180ms ease;
     }
 
+    html[data-theme="light"],
+    html[data-theme="light"] body,
+    html[data-theme="light"] #bootSplash {
+      background: #fafaf9;
+      color: #1c1917;
+    }
+
     body.app-ready #bootSplash {
       opacity: 0;
       pointer-events: none;
@@ -76,7 +83,7 @@
     <aside class="sidebar" aria-label="Primary navigation">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">
-          <img class="brand-icon" src="./assets/khukri-icon.png" alt="">
+          <img class="brand-icon" src="./assets/khukri-mark.svg" alt="">
         </div>
         <h1 class="brand-wordmark">Khukri</h1>
       </div>
@@ -250,9 +257,9 @@
               </div>
               <div class="settings-section-body">
                 <div class="field field-with-browse">
-                  <span data-i18n="settings.general.pathLabel"></span>
+                  <span id="settingsDefaultPathLabel" data-i18n="settings.general.pathLabel"></span>
                   <div class="input-browse-row">
-                    <input id="settingsDefaultPath" name="generalDefaultPath" type="text">
+                    <input id="settingsDefaultPath" name="generalDefaultPath" type="text" aria-labelledby="settingsDefaultPathLabel" aria-describedby="settingsDefaultPathHint">
                     <button id="browseDefaultPath" class="browse-btn" type="button" aria-label="Browse for folder">
                       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                         <path d="M1.5 4.5h4l1.5 2h7.5v7H1.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
@@ -260,7 +267,7 @@
                       Browse
                     </button>
                   </div>
-                  <p class="field-hint" data-i18n="settings.general.pathHint"></p>
+                  <p id="settingsDefaultPathHint" class="field-hint" data-i18n="settings.general.pathHint"></p>
                 </div>
                 <label class="field">
                   <span data-i18n="settings.general.concurrentLabel"></span>
@@ -299,7 +306,7 @@
             <article class="settings-section">
               <div class="settings-section-head">
                 <div class="settings-section-label-group">
-                  <div class="settings-section-icon" style="background:rgba(139,92,246,0.1);border-color:rgba(139,92,246,0.2);color:var(--kh-violet-t)" aria-hidden="true">
+                  <div class="settings-section-icon settings-section-icon--violet" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4"/>
                       <path d="M8 5v3.5l2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -326,7 +333,7 @@
             <article class="settings-section">
               <div class="settings-section-head">
                 <div class="settings-section-label-group">
-                  <div class="settings-section-icon" style="background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.2);color:var(--kh-amber-t)" aria-hidden="true">
+                  <div class="settings-section-icon settings-section-icon--amber" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <rect x="2" y="3" width="12" height="11" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
                       <path d="M5 1v3M11 1v3M2 7h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -358,7 +365,7 @@
             <article class="settings-section">
               <div class="settings-section-head">
                 <div class="settings-section-label-group">
-                  <div class="settings-section-icon" style="background:rgba(14,165,233,0.1);border-color:rgba(14,165,233,0.2);color:var(--kh-sky-t)" aria-hidden="true">
+                  <div class="settings-section-icon settings-section-icon--sky" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4"/>
                       <path d="M8 2v2M8 12v2M2 8h2M12 8h2M3.9 3.9l1.4 1.4M10.7 10.7l1.4 1.4M3.9 12.1l1.4-1.4M10.7 5.3l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -384,7 +391,7 @@
             <article class="settings-section">
               <div class="settings-section-head">
                 <div class="settings-section-label-group">
-                  <div class="settings-section-icon" style="background:rgba(244,63,94,0.1);border-color:rgba(244,63,94,0.2);color:var(--kh-rose-t)" aria-hidden="true">
+                  <div class="settings-section-icon settings-section-icon--rose" aria-hidden="true">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
                       <path d="M3 4.5A1.5 1.5 0 014.5 3h7A1.5 1.5 0 0113 4.5v7a1.5 1.5 0 01-1.5 1.5h-7A1.5 1.5 0 013 11.5v-7z" stroke="currentColor" stroke-width="1.4"/>
                       <path d="M6 8h4M8 6v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>

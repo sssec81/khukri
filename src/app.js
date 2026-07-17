@@ -113,8 +113,10 @@ let downloadCounter = 0;
 let queueRefreshInFlight = false;
 let queueRefreshInterval = null;
 let settingsDirty = false;
+let settingsSaveInFlight = false;
 let renderQueueFrame = null;
 let lastRenderedHTML = "";
+let onboardingPreviousFocus = null;
 
 function onboardingComplete(settings) {
   return Boolean(settings?.onboarding_complete);
@@ -122,16 +124,62 @@ function onboardingComplete(settings) {
 
 function toggleOnboarding(settings) {
   const overlay = document.getElementById("mediaOnboarding");
+  const shell = document.querySelector(".shell");
   if (!overlay) {
     return;
   }
 
   const shouldShow = !onboardingComplete(settings);
+  const wasOpen = !overlay.hidden;
   overlay.hidden = !shouldShow;
   document.body.classList.toggle("onboarding-open", shouldShow);
+  if (shell) {
+    shell.inert = shouldShow;
+    if (shouldShow) {
+      shell.setAttribute("aria-hidden", "true");
+    } else {
+      shell.removeAttribute("aria-hidden");
+    }
+  }
 
   if (shouldShow) {
+    if (!wasOpen) {
+      onboardingPreviousFocus = document.activeElement;
+    }
     document.getElementById("acknowledgeOnboarding")?.focus();
+  } else if (wasOpen) {
+    const canRestorePrevious = onboardingPreviousFocus?.isConnected
+      && onboardingPreviousFocus !== document.body
+      && onboardingPreviousFocus !== document.documentElement;
+    const returnTarget = canRestorePrevious
+      ? onboardingPreviousFocus
+      : document.querySelector('[data-view="downloads"] .view-title');
+    onboardingPreviousFocus = null;
+    returnTarget?.focus({ preventScroll: true });
+  }
+}
+
+function setButtonBusy(button, busy) {
+  if (!button) {
+    return;
+  }
+  button.disabled = busy;
+  if (busy) {
+    button.setAttribute("aria-busy", "true");
+  } else {
+    button.removeAttribute("aria-busy");
+  }
+}
+
+async function runWithBusyButton(button, task) {
+  if (!button || button.getAttribute("aria-busy") === "true") {
+    return;
+  }
+  setButtonBusy(button, true);
+  try {
+    return await task();
+  } finally {
+    setButtonBusy(button, false);
   }
 }
 
@@ -632,52 +680,8 @@ function renderQueueSync(items) {
     .join("");
 
   if (lastRenderedHTML !== newHTML) {
-    // Capture current RENDERED widths before innerHTML swap.
-    // Must use getBoundingClientRect — inline style.width is "" for CSS-driven
-    // bars. Only capture determinate fills (those with an inline style.width).
-    const prevWidths = new Map();
-    list.querySelectorAll(".download-item[data-row-id]").forEach((card) => {
-      const rowId = card.dataset.rowId;
-      if (!rowId) return;
-      const fill = card.querySelector(".progress-fill--determinate");
-      const track = card.querySelector(".progress-track");
-      if (!fill || !track) return;
-      const fillPx = fill.getBoundingClientRect().width;
-      const trackPx = track.getBoundingClientRect().width;
-      if (trackPx > 0) {
-        const pct = ((fillPx / trackPx) * 100).toFixed(2);
-        prevWidths.set(rowId, `${pct}%`);
-      }
-    });
-
     list.innerHTML = newHTML;
     lastRenderedHTML = newHTML;
-
-    // Restore old widths on newly-created determinate fills, then animate to target.
-    if (prevWidths.size > 0) {
-      list.querySelectorAll(".download-item[data-row-id]").forEach((card) => {
-        const rowId = card.dataset.rowId;
-        if (!rowId) return;
-        const fill = card.querySelector(".progress-fill--determinate");
-        if (!fill) return;
-        const prev = prevWidths.get(rowId);
-        if (!prev) return;
-        const target = fill.style.width;
-        if (!target || target === prev) return;
-        // Pin to previous width with no transition
-        fill.style.transition = "none";
-        fill.style.width = prev;
-        // Double rAF: first rAF runs before paint but after style recalc,
-        // second rAF guarantees the pinned width is committed to layout
-        // before we release the transition — otherwise WebKit skips it.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            fill.style.transition = "";
-            fill.style.width = target;
-          });
-        });
-      });
-    }
 
     if (focusedRowId) {
       list.querySelector(`[data-row-id="${focusedRowId}"]`)?.focus();
@@ -793,8 +797,8 @@ function renderSettingsStatus() {
   const statusNode = document.getElementById("settingsStatus");
   const saveButton = document.getElementById("saveSettingsButton");
   settingsDirty = !settingsMatchForm();
-  saveButton.disabled = !settingsDirty;
-  saveButton.setAttribute("aria-disabled", String(!settingsDirty));
+  saveButton.disabled = !settingsDirty || settingsSaveInFlight;
+  saveButton.setAttribute("aria-disabled", String(!settingsDirty || settingsSaveInFlight));
   document.body.classList.toggle("settings-dirty", settingsDirty);
 
   if (!settingsDirty && !statusNode.dataset.state) {
@@ -1060,24 +1064,53 @@ async function main() {
     }
   });
 
+  document.getElementById("mediaOnboarding")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") {
+      return;
+    }
+    const focusable = Array.from(event.currentTarget.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (focusable.length === 1 || (event.shiftKey && document.activeElement === first)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+
   onboardingButton?.addEventListener("click", () => {
     settingsStatus.dataset.state = "loading";
     settingsStatus.textContent = strings["status.loading"];
-    void acknowledgeOnboarding().then(() => {
-      settingsStatus.dataset.state = "saved";
-      settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
-    }).catch((error) => {
-      settingsStatus.dataset.state = "failed";
-      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    void runWithBusyButton(onboardingButton, async () => {
+      try {
+        await acknowledgeOnboarding();
+        settingsStatus.dataset.state = "saved";
+        settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
+      } catch (error) {
+        settingsStatus.dataset.state = "failed";
+        settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+      }
     });
   });
 
   checkYtdlpButton?.addEventListener("click", () => {
     settingsStatus.dataset.state = "loading";
     settingsStatus.textContent = strings["ytdlp.updateStarted"];
-    void checkYtdlpNow().catch((error) => {
-      settingsStatus.dataset.state = "failed";
-      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+    void runWithBusyButton(checkYtdlpButton, async () => {
+      try {
+        await checkYtdlpNow();
+      } catch (error) {
+        settingsStatus.dataset.state = "failed";
+        settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+      }
     });
   });
 
@@ -1115,37 +1148,53 @@ async function main() {
     }
   });
 
-  document.getElementById("browseDefaultPath").addEventListener("click", () => {
-    void invoke("pick_folder").then((picked) => {
-      if (picked) {
-        document.getElementById("settingsDefaultPath").value = picked;
-        renderSettingsStatus();
+  document.getElementById("browseDefaultPath").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    void runWithBusyButton(button, async () => {
+      try {
+        const picked = await invoke("pick_folder");
+        if (picked) {
+          document.getElementById("settingsDefaultPath").value = picked;
+          renderSettingsStatus();
+        }
+      } catch (error) {
+        settingsStatus.dataset.state = "failed";
+        settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
       }
-    }).catch((error) => {
-      settingsStatus.dataset.state = "failed";
-      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 
-  document.getElementById("browseOutputPath").addEventListener("click", () => {
-    void invoke("pick_folder").then((picked) => {
-      if (picked) {
-        document.getElementById("outputPath").value = picked;
+  document.getElementById("browseOutputPath").addEventListener("click", (event) => {
+    const button = event.currentTarget;
+    void runWithBusyButton(button, async () => {
+      try {
+        const picked = await invoke("pick_folder");
+        if (picked) {
+          document.getElementById("outputPath").value = picked;
+        }
+      } catch (error) {
+        statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
       }
-    }).catch((error) => {
-      statusNode.textContent = `${strings["status.failed"]} ${errorText(error)}`;
     });
   });
 
   settingsForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!settingsDirty) {
+    if (!settingsDirty || settingsSaveInFlight) {
       return;
     }
-    void saveSettings().catch((error) => {
-      settingsStatus.dataset.state = "failed";
-      settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
-    });
+    settingsSaveInFlight = true;
+    setButtonBusy(saveSettingsButton, true);
+    void saveSettings()
+      .catch((error) => {
+        settingsStatus.dataset.state = "failed";
+        settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+      })
+      .finally(() => {
+        settingsSaveInFlight = false;
+        setButtonBusy(saveSettingsButton, false);
+        renderSettingsStatus();
+      });
   });
 
   settingsForm.addEventListener("input", () => {
@@ -1166,12 +1215,15 @@ async function main() {
       }
       settingsStatus.dataset.state = "loading";
       settingsStatus.textContent = strings["status.loading"];
-      void resetSettingsSection(button.dataset.section).then(() => {
-        settingsStatus.dataset.state = "saved";
-        settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
-      }).catch((error) => {
-        settingsStatus.dataset.state = "failed";
-        settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+      void runWithBusyButton(button, async () => {
+        try {
+          await resetSettingsSection(button.dataset.section);
+          settingsStatus.dataset.state = "saved";
+          settingsStatus.innerHTML = `<span class="settings-saved-indicator">${htmlEscape(strings["settings.saved"])}</span>`;
+        } catch (error) {
+          settingsStatus.dataset.state = "failed";
+          settingsStatus.textContent = `${strings["status.failed"]} ${errorText(error)}`;
+        }
       });
     });
   });
@@ -1281,7 +1333,7 @@ async function main() {
               progressById.delete(event.payload.id);
               renderQueue(currentQueue);
             }
-          }, 1200);
+          }, 250);
         } else {
           const item = currentQueue.find(i => i.id === event.payload.id);
           const isTerminal = ["paused", "failed", "cancelled"].includes(event.payload.status);
@@ -1367,10 +1419,10 @@ async function main() {
     window.clearInterval(queueRefreshInterval);
   }
 
-  // Keep queue view feeling instant even if event delivery is delayed.
+  // Events drive live updates; this slower poll only reconciles missed events.
   queueRefreshInterval = window.setInterval(() => {
     void refreshQueue(strings, { preserveStatus: true });
-  }, 500);
+  }, 5000);
 }
 
 function showBootError(error) {

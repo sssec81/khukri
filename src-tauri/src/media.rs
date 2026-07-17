@@ -58,6 +58,9 @@ pub struct MediaJob {
     pub quality: MediaQuality,
     pub headers: Vec<(String, String)>,
     pub browser_session: Option<String>,
+    pub proxy_url: Option<String>,
+    pub bandwidth_cap: Option<u64>,
+    pub concurrent_fragments: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -631,6 +634,21 @@ fn build_arguments(job: &MediaJob, ffmpeg_binary: Option<&Path>) -> Vec<String> 
         args.push(browser.to_string());
     }
 
+    if let Some(proxy_url) = job.proxy_url.as_deref() {
+        args.push("--proxy".to_string());
+        args.push(proxy_url.to_string());
+    }
+
+    if let Some(bandwidth_cap) = job.bandwidth_cap.filter(|value| *value > 0) {
+        args.push("--limit-rate".to_string());
+        args.push(bandwidth_cap.to_string());
+    }
+
+    if let Some(concurrent_fragments) = job.concurrent_fragments.filter(|value| *value > 0) {
+        args.push("--concurrent-fragments".to_string());
+        args.push(concurrent_fragments.to_string());
+    }
+
     for (name, value) in &job.headers {
         args.push("--add-header".to_string());
         args.push(format!("{name}:{value}"));
@@ -812,6 +830,7 @@ where
     let _ = tx.send(next);
 }
 
+#[allow(clippy::needless_return)]
 fn platform_ytdlp_name() -> Result<&'static str, String> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -840,6 +859,7 @@ fn platform_ytdlp_name() -> Result<&'static str, String> {
     }
 }
 
+#[allow(clippy::needless_return)]
 fn platform_ffmpeg_name() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -995,6 +1015,9 @@ mod tests {
                 quality: MediaQuality::Best,
                 headers: Vec::new(),
                 browser_session: None,
+                proxy_url: None,
+                bandwidth_cap: None,
+                concurrent_fragments: None,
             },
             Some(binary_path.as_path()),
         );
@@ -1026,6 +1049,9 @@ mod tests {
             quality: MediaQuality::Best,
             headers: Vec::new(),
             browser_session: Some("chrome".to_string()),
+            proxy_url: None,
+            bandwidth_cap: None,
+            concurrent_fragments: None,
         };
 
         let args = build_arguments(&job, None);
@@ -1036,5 +1062,29 @@ mod tests {
         job.browser_session = Some("chrome:../../secret".to_string());
         let args = build_arguments(&job, None);
         assert!(!args.iter().any(|part| part == "--cookies-from-browser"));
+    }
+
+    #[test]
+    fn proxy_and_performance_options_are_forwarded_to_ytdlp() {
+        let job = MediaJob {
+            id: "job-1".to_string(),
+            url: "https://www.youtube.com/watch?v=abc".to_string(),
+            output_path: PathBuf::from("/tmp/sample.bin"),
+            quality: MediaQuality::Best,
+            headers: Vec::new(),
+            browser_session: None,
+            proxy_url: Some("socks5://127.0.0.1:1080".to_string()),
+            bandwidth_cap: Some(1_024),
+            concurrent_fragments: Some(4),
+        };
+
+        let args = build_arguments(&job, None);
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["--proxy", "socks5://127.0.0.1:1080"]));
+        assert!(args.windows(2).any(|part| part == ["--limit-rate", "1024"]));
+        assert!(args
+            .windows(2)
+            .any(|part| part == ["--concurrent-fragments", "4"]));
     }
 }

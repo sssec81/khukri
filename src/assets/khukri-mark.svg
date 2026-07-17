@@ -1,0 +1,15 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Khukri</title>
+
+  <rect x="3" y="3" width="58" height="58" rx="17" fill="#4338CA"/>
+  <rect x="4" y="4" width="56" height="56" rx="16" stroke="#C7D2FE" stroke-opacity="0.28" stroke-width="2"/>
+
+  <!-- One forward-curving silhouette stays identifiable at sidebar size. -->
+  <path d="M13 13.5C25.2 15.9 36.9 21.5 45.2 30.5C49.8 35.5 52.2 41 51.6 47.8C44.3 46.4 37.6 43.2 31.8 38.2C22.8 30.5 17.1 22.1 13 13.5Z" fill="#F8FAFC"/>
+  <path d="M30.6 37.2C33.5 39.8 36.6 41.9 39.8 43.7L43.8 39.7L38.4 34.3L30.6 37.2Z" fill="#4338CA"/>
+
+  <!-- Dark bolster and one warm grip accent keep the palette disciplined. -->
+  <path d="M36.1 40.5L41.7 34.9L47 40.2L41.4 45.8L36.1 40.5Z" fill="#1E1B4B"/>
+  <path d="M41 46.1L47.3 39.8L52.1 44.6L45.8 50.9L41 46.1Z" fill="#F59E0B"/>
+  <path d="M44.2 49.1L50.3 43" stroke="#FFF7D6" stroke-width="1.7" stroke-linecap="round"/>
+</svg>
